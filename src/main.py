@@ -1,10 +1,12 @@
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from .config.db import engine, Base, DbSession
 from .api import register_routes
 from .logging import configure_logging, LogLevels
 from .rate_limiter import limiter
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from .utils.exception_handler import validation_exception_handler
 
 configure_logging(LogLevels.info)
 
@@ -12,11 +14,12 @@ app = FastAPI()
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(RequestValidationError, validation_exception_handler)
 
 """ Only uncomment below to create new tables, 
 otherwise the tests will fail if not connected
 """
-# Base.metadata.create_all(bind=engine)
+#Base.metadata.create_all(bind=engine)
 
 register_routes(app)
 
