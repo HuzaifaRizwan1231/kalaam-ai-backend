@@ -1,20 +1,19 @@
 from fastapi import FastAPI, Request
-from fastapi.exceptions import RequestValidationError
-from .config.db import engine, Base, DbSession
+from .config.db import engine, Base
 from .api import register_routes
 from .logging import configure_logging, LogLevels
 from .rate_limiter import limiter
-from slowapi import _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
-from .utils.exception_handler import validation_exception_handler
+from .utils.exception_handler import register_exception_handlers
+from .middleware.auth import CurrentUser
 
 configure_logging(LogLevels.info)
 
 app = FastAPI()
 
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-app.add_exception_handler(RequestValidationError, validation_exception_handler)
+
+# Register all exception handlers
+register_exception_handlers(app)
 
 """ Only uncomment below to create new tables, 
 otherwise the tests will fail if not connected
@@ -24,5 +23,5 @@ otherwise the tests will fail if not connected
 register_routes(app)
 
 @app.get("/")
-async def read_root(request: Request):
+async def read_root(current_user: CurrentUser, request: Request):
     return {"message": "Hello world"}
