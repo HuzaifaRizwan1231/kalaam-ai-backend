@@ -7,7 +7,7 @@ router = APIRouter()
 controller = AnalysisController()
 
 
-@router.post("/analyze", status_code=200)
+@router.post("", status_code=200)
 async def analyze_file(
     current_user: CurrentUser,
     db: DbSession,
@@ -21,7 +21,7 @@ async def analyze_file(
     return await controller.create_analysis(file, current_user, db)
 
 
-@router.get("/analyze/{analysis_id}")
+@router.get("/{analysis_id}")
 def get_analysis(
     analysis_id: int,
     current_user: CurrentUser,
@@ -34,7 +34,7 @@ def get_analysis(
     return controller.get_analysis(analysis_id, current_user, db)
 
 
-@router.get("/analyses")
+@router.get("")
 def get_all_analyses(
     current_user: CurrentUser,
     db: DbSession

@@ -151,7 +151,7 @@ Authorization: Bearer <your_access_token>
 ```
 
 ### 4. Upload and Analyze File
-**Endpoint:** `POST /api/analyze`
+**Endpoint:** `POST /analysis`
 
 **Authentication Required:** Yes (Bearer Token)
 
@@ -166,7 +166,7 @@ Authorization: Bearer <your_access_token>
 const formData = new FormData();
 formData.append('file', fileInput.files[0]);
 
-const response = await fetch('http://localhost:8000/api/analyze', {
+const response = await fetch('http://localhost:8000/analysis', {
   method: 'POST',
   headers: {
     'Authorization': `Bearer ${accessToken}`
@@ -182,7 +182,7 @@ const data = await response.json();
 const formData = new FormData();
 formData.append('file', file);
 
-const response = await axios.post('http://localhost:8000/api/analyze', formData, {
+const response = await axios.post('http://localhost:8000/analysis', formData, {
   headers: {
     'Authorization': `Bearer ${accessToken}`,
     'Content-Type': 'multipart/form-data'
@@ -298,7 +298,7 @@ const response = await axios.post('http://localhost:8000/api/analyze', formData,
 ---
 
 ### 5. Get Analysis by ID
-**Endpoint:** `GET /api/analyze/{analysis_id}`
+**Endpoint:** `GET /analysis/{analysis_id}`
 
 **Authentication Required:** Yes (Bearer Token)
 
@@ -307,7 +307,7 @@ const response = await axios.post('http://localhost:8000/api/analyze', formData,
 
 **Example Request:**
 ```javascript
-const response = await fetch('http://localhost:8000/api/analyze/1', {
+const response = await fetch('http://localhost:8000/analysis/1', {
   method: 'GET',
   headers: {
     'Authorization': `Bearer ${accessToken}`
@@ -356,13 +356,13 @@ const data = await response.json();
 ---
 
 ### 6. Get All User Analyses
-**Endpoint:** `GET /api/analyses`
+**Endpoint:** `GET /analysis`
 
 **Authentication Required:** Yes (Bearer Token)
 
 **Example Request:**
 ```javascript
-const response = await fetch('http://localhost:8000/api/analyses', {
+const response = await fetch('http://localhost:8000/analysis', {
   method: 'GET',
   headers: {
     'Authorization': `Bearer ${accessToken}`
@@ -454,7 +454,7 @@ Include the token in all requests to protected endpoints:
 ```javascript
 const token = localStorage.getItem('access_token');
 
-const response = await fetch('http://localhost:8000/api/analyze', {
+const response = await fetch('http://localhost:8000/analysis', {
   method: 'POST',
   headers: {
     'Authorization': `Bearer ${token}`
@@ -544,7 +544,7 @@ const { data: { access_token } } = await loginResponse.json();
 const formData = new FormData();
 formData.append('file', fileInput.files[0]);
 
-const analyzeResponse = await fetch('http://localhost:8000/api/analyze', {
+const analyzeResponse = await fetch('http://localhost:8000/analysis', {
   method: 'POST',
   headers: { 'Authorization': `Bearer ${access_token}` },
   body: formData
@@ -559,7 +559,7 @@ if (analysisResult.success) {
 }
 
 // 3. Get all user analyses
-const allAnalysesResponse = await fetch('http://localhost:8000/api/analyses', {
+const allAnalysesResponse = await fetch('http://localhost:8000/analysis', {
   method: 'GET',
   headers: { 'Authorization': `Bearer ${access_token}` }
 });
@@ -603,4 +603,4 @@ console.log(`Found ${count} analyses`);
    - **LUFS**: Loudness Units relative to Full Scale (broadcast standard)
    - Both measured in 1-second intervals
 
-10. **Status polling:** If implementing real-time updates, poll `/api/analyze/{id}` until status changes from "processing" to "completed" or "failed"
+10. **Status polling:** If implementing real-time updates, poll `GET /analysis/{id}` until status changes from "processing" to "completed" or "failed"
