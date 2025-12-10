@@ -30,14 +30,17 @@ class AuthController:
     
     @staticmethod
     def authenticate_user(username: str, password: str, db: Session):
-        """Authenticate user and return access token"""
+        """Authenticate user and return access token in ResponseBuilder format"""
         user = db.query(User).filter(User.username == username).first()
         if not user or not verify_password(password, user.hashed_password):
             return ResponseBuilder.error("Invalid credentials", 401)
         
         access_token = create_access_token({"sub": user.username, "id": user.id})
         return ResponseBuilder.success(
-            data={"access_token": access_token, "token_type": "bearer"},
+            data={
+                "access_token": access_token,
+                "token_type": "bearer"
+            },
             message="Login successful",
             status_code=200
         )

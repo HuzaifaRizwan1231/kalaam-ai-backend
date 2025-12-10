@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from ..config.db import DbSession
-from ..schemas.auth import UserCreate
+from ..schemas.auth import UserCreate, LoginRequest
 from ..controllers.auth import AuthController
 
 router = APIRouter()
@@ -17,10 +17,22 @@ def register(payload: UserCreate, db: DbSession):
     return result
 
 @router.post("/token")
-def login(
+def login_oauth2(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
     db: DbSession
 ):
-    """Login and get access token"""
+    """OAuth2-compatible login for Swagger UI authorization"""
     result = AuthController.authenticate_user(form_data.username, form_data.password, db)
-    return result
+    
+    # Error: return ResponseBuilder format
+    if not result.get("success"):
+        return result
+    
+    # Success: return flat OAuth2 format (for Swagger UI)
+    return result["data"]
+
+@router.post("/login")
+def login_json(payload: LoginRequest, db: DbSession):
+    """JSON login endpoint for frontend - consistent ResponseBuilder format"""
+    result = AuthController.authenticate_user(payload.username, payload.password, db)
+    return result  # Always ResponseBuilder format
