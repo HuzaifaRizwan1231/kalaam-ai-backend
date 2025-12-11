@@ -10,7 +10,7 @@ from fastapi import UploadFile, HTTPException
 class FileProcessingService:
     """Service for processing uploaded files and extracting audio/video"""
 
-    ALLOWED_EXTENSIONS = {"mp4", "mp3", "wav", "avi", "webm"}
+    ALLOWED_EXTENSIONS = {"mp4", "mp3", "wav", "avi", "webm", "mpeg"}
     MAX_FILE_SIZE = 20 * 1024 * 1024  # 20MB in bytes
 
     def __init__(self, assemblyai_api_key: str):
