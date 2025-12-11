@@ -38,8 +38,6 @@ class AnalysisController:
         
         audio_path = None
         temp_dir = None
-
-        print("User: ", user)
         
         # Create initial analysis record in database
         analysis = Analysis(

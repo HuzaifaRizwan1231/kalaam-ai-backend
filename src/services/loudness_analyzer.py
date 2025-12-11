@@ -46,15 +46,22 @@ class LoudnessAnalyzer:
             if len(segment) == 0:
                 continue
             
-            # Compute RMS
+            # Compute RMS (use -96 dB for silence, standard for digital audio)
             rms = np.sqrt(np.mean(segment**2))
-            rms_db = float(20 * np.log10(rms)) if rms > 0 else float(-np.inf)
+            if rms > 0 and np.isfinite(rms):
+                rms_db = float(20 * np.log10(rms))
+            else:
+                rms_db = -96.0  # Standard value for digital silence
             
-            # Compute LUFS
+            # Compute LUFS (use -70 LUFS for silence/too short segments)
             try:
-                lufs = float(meter.integrated_loudness(segment))
+                lufs = meter.integrated_loudness(segment)
+                if not np.isfinite(lufs):  # Check if lufs is -inf or nan
+                    lufs = -70.0
+                else:
+                    lufs = float(lufs)
             except Exception:
-                lufs = float(-np.inf)  # Handle short/quiet segments
+                lufs = -70.0  # Standard LUFS for silence
             
             # Store results
             results.append({
@@ -65,17 +72,17 @@ class LoudnessAnalyzer:
                 "lufs": lufs
             })
         
-        # Calculate statistics
-        valid_rms = [r["rms_db"] for r in results if r["rms_db"] != float(-np.inf)]
-        valid_lufs = [r["lufs"] for r in results if r["lufs"] != float(-np.inf)]
+        # Calculate statistics (only from valid finite values)
+        valid_rms = [r["rms_db"] for r in results if r["rms_db"] > -96.0]
+        valid_lufs = [r["lufs"] for r in results if r["lufs"] > -70.0]
         
         stats = {
-            "average_rms_db": float(np.mean(valid_rms)) if valid_rms else None,
-            "average_lufs": float(np.mean(valid_lufs)) if valid_lufs else None,
-            "min_rms_db": float(np.min(valid_rms)) if valid_rms else None,
-            "max_rms_db": float(np.max(valid_rms)) if valid_rms else None,
-            "min_lufs": float(np.min(valid_lufs)) if valid_lufs else None,
-            "max_lufs": float(np.max(valid_lufs)) if valid_lufs else None,
+            "average_rms_db": float(np.mean(valid_rms)) if valid_rms else -96.0,
+            "average_lufs": float(np.mean(valid_lufs)) if valid_lufs else -70.0,
+            "min_rms_db": float(np.min(valid_rms)) if valid_rms else -96.0,
+            "max_rms_db": float(np.max(valid_rms)) if valid_rms else -96.0,
+            "min_lufs": float(np.min(valid_lufs)) if valid_lufs else -70.0,
+            "max_lufs": float(np.max(valid_lufs)) if valid_lufs else -70.0,
             "total_duration": float(duration)
         }
         
