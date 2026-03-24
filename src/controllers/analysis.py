@@ -9,6 +9,7 @@ from ..services.file_processing import FileProcessingService
 from ..services.filler_word_analyzer import FillerWordAnalyzer
 from ..services.loudness_analyzer import LoudnessAnalyzer
 from ..services.wpm_analyzer import WPMAnalyzer
+from ..services.head_direction_analyzer import HeadDirectionAnalyzer
 from ..utils.response_builder import ResponseBuilder
 
 
@@ -25,6 +26,7 @@ class AnalysisController:
         self.filler_analyzer = FillerWordAnalyzer()
         self.loudness_analyzer = LoudnessAnalyzer()
         self.wpm_analyzer = WPMAnalyzer()
+        self.head_direction_analyzer = HeadDirectionAnalyzer()
     
     async def create_analysis(self, file: UploadFile, user: User, db: Session):
         """
@@ -57,17 +59,31 @@ class AnalysisController:
             # Get temp directory from audio path for cleanup
             temp_dir = os.path.dirname(audio_path)
             
-            # Step 2: Run WPM, filler, and loudness analysis IN PARALLEL
+            # Step 2: Run WPM, filler, loudness, and (for videos) head direction IN PARALLEL
             wpm_task = asyncio.to_thread(self.wpm_analyzer.calculate_wpm, captions, 2)
             filler_task = asyncio.to_thread(self.filler_analyzer.identify_fillers, transcript)
             loudness_task = asyncio.to_thread(self.loudness_analyzer.analyze_loudness, audio_path, 1)
-            
-            # Wait for all three to complete
-            wpm_data, filler_analysis, loudness_analysis = await asyncio.gather(
-                wpm_task,
-                filler_task,
-                loudness_task
-            )
+
+            # Head direction analysis only makes sense for video files
+            if file_type == "video":
+                # Reconstruct the original video path saved by file_processing service
+                video_path = os.path.join(temp_dir, "input" + os.path.splitext(file.filename)[1])
+                head_direction_task = asyncio.to_thread(
+                    self.head_direction_analyzer.analyze_video, video_path
+                )
+                wpm_data, filler_analysis, loudness_analysis, head_direction_analysis = await asyncio.gather(
+                    wpm_task,
+                    filler_task,
+                    loudness_task,
+                    head_direction_task,
+                )
+            else:
+                wpm_data, filler_analysis, loudness_analysis = await asyncio.gather(
+                    wpm_task,
+                    filler_task,
+                    loudness_task,
+                )
+                head_direction_analysis = None
             
             # Update analysis record with results
             analysis.file_type = file_type
@@ -75,6 +91,7 @@ class AnalysisController:
             analysis.transcript = transcript
             analysis.captions = captions
             analysis.wpm_data = wpm_data
+            analysis.head_direction_analysis = head_direction_analysis
             db.commit()
             db.refresh(analysis)
             
@@ -87,6 +104,7 @@ class AnalysisController:
                     "wpm_data": wpm_data,
                     "filler_word_analysis": filler_analysis,
                     "loudness_analysis": loudness_analysis,
+                    "head_direction_analysis": head_direction_analysis,
                     "created_at": analysis.created_at.isoformat()
                 },
                 message="Analysis completed and saved successfully",
@@ -123,6 +141,7 @@ class AnalysisController:
                 "status": analysis.status,
                 "transcript": analysis.transcript,
                 "wpm_data": analysis.wpm_data,
+                "head_direction_analysis": analysis.head_direction_analysis,
                 "error_message": analysis.error_message,
                 "created_at": analysis.created_at.isoformat(),
                 "updated_at": analysis.updated_at.isoformat()

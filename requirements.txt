@@ -1,4 +1,6 @@
 alembic==1.16.4
+mediapipe==0.10.11
+opencv-python==4.10.0.84
 annotated-types==0.7.0
 anyio==4.10.0
 assemblyai==0.30.0
@@ -31,7 +33,7 @@ MarkupSafe==3.0.2
 msgpack==1.1.2
 nltk==3.9.1
 numba==0.63.1
-numpy==2.3.5
+numpy==1.26.4
 packaging==25.0
 pandas==2.2.3
 passlib==1.7.4

@@ -11,7 +11,7 @@ class FileProcessingService:
     """Service for processing uploaded files and extracting audio/video"""
 
     ALLOWED_EXTENSIONS = {"mp4", "mp3", "wav", "avi", "webm", "mpeg"}
-    MAX_FILE_SIZE = 20 * 1024 * 1024  # 20MB in bytes
+    MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB in bytes
 
     def __init__(self, assemblyai_api_key: str):
         aai.settings.api_key = assemblyai_api_key
@@ -107,7 +107,7 @@ class FileProcessingService:
                 content = await file.read()
                 if len(content) > self.MAX_FILE_SIZE:
                     raise HTTPException(
-                        status_code=413, detail="File size exceeds 20MB limit"
+                        status_code=413, detail="File size exceeds 100MB limit"
                     )
                 f.write(content)
 
