@@ -58,7 +58,7 @@ class HeadDirectionAnalyzer:
     Service to analyze head direction in a video using OpenCV and MediaPipe FaceMesh.
     """
 
-    def analyze_video(self, video_path: str, sample_every_n_frames: int = 3) -> Dict:
+    def analyze_video(self, video_path: str, sample_every_n_frames: int = 30) -> Dict:
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             raise ValueError(f"Cannot open video file: {video_path}")
@@ -93,7 +93,17 @@ class HeadDirectionAnalyzer:
                 if frame_index % sample_every_n_frames != 0:
                     continue
 
+                if frame_index % 50 == 0:
+                    print(f"Processing frame {frame_index}...")
+
+                # Resize for performance if frame is too large
                 h, w = frame.shape[:2]
+                max_dim = 640
+                if w > max_dim or h > max_dim:
+                    scale = max_dim / max(w, h)
+                    frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
+                    h, w = frame.shape[:2]
+
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 results = face_mesh.process(rgb)
 

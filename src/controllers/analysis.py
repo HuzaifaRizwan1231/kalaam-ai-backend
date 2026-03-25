@@ -1,6 +1,8 @@
 import os
 import asyncio
 import shutil
+import time
+from datetime import datetime
 from fastapi import UploadFile, HTTPException
 from sqlalchemy.orm import Session
 from ..entities.analysis import Analysis
@@ -10,6 +12,7 @@ from ..services.filler_word_analyzer import FillerWordAnalyzer
 from ..services.loudness_analyzer import LoudnessAnalyzer
 from ..services.wpm_analyzer import WPMAnalyzer
 from ..services.head_direction_analyzer import HeadDirectionAnalyzer
+from ..services.intonation_analyzer import IntonationAnalyzer
 from ..utils.response_builder import ResponseBuilder
 
 
@@ -27,6 +30,7 @@ class AnalysisController:
         self.loudness_analyzer = LoudnessAnalyzer()
         self.wpm_analyzer = WPMAnalyzer()
         self.head_direction_analyzer = HeadDirectionAnalyzer()
+        self.intonation_analyzer = IntonationAnalyzer()
     
     async def create_analysis(self, file: UploadFile, user: User, db: Session):
         """
@@ -54,36 +58,65 @@ class AnalysisController:
         
         try:
             # Step 1: Process file and get transcription (MUST wait for this)
+            start_total = time.perf_counter()
+            t1 = datetime.now().strftime("%H:%M:%S")
+            print(f"[{t1}] --- Step 1: Extracting audio and transcribing (AssemblyAI) ---")
+            
             transcript, captions, file_type, audio_path = await self.file_service.process_file(file)
+            
+            t2 = datetime.now().strftime("%H:%M:%S")
+            d1 = time.perf_counter() - start_total
+            print(f"[{t2}] --- Step 1 Finished in {d1:.2f}s: Transcription received ---")
             
             # Get temp directory from audio path for cleanup
             temp_dir = os.path.dirname(audio_path)
             
-            # Step 2: Run WPM, filler, loudness, and (for videos) head direction IN PARALLEL
-            wpm_task = asyncio.to_thread(self.wpm_analyzer.calculate_wpm, captions, 2)
-            filler_task = asyncio.to_thread(self.filler_analyzer.identify_fillers, transcript)
-            loudness_task = asyncio.to_thread(self.loudness_analyzer.analyze_loudness, audio_path, 1)
+            # Step 2: Run analyzers IN PARALLEL
+            t3 = datetime.now().strftime("%H:%M:%S")
+            step2_start = time.perf_counter()
+            async def measure_task(name, func, *args):
+                start = time.perf_counter()
+                res = await asyncio.to_thread(func, *args)
+                d = time.perf_counter() - start
+                print(f"[{datetime.now().strftime('%H:%M:%S')}]     -> {name} took {d:.2f}s")
+                return res
+
+            print(f"[{t3}] --- Step 2: Starting parallel analyzers (WPM, Filler, Loudness, Intonation) ---")
+            
+            wpm_task = measure_task("WPM", self.wpm_analyzer.calculate_wpm, captions, 2)
+            filler_task = measure_task("Filler", self.filler_analyzer.identify_fillers, transcript)
+            loudness_task = measure_task("Loudness", self.loudness_analyzer.analyze_loudness, audio_path, 1)
+            intonation_task = measure_task(
+                "Intonation", self.intonation_analyzer.analyze_intonation, audio_path, transcript, captions
+            )
 
             # Head direction analysis only makes sense for video files
             if file_type == "video":
-                # Reconstruct the original video path saved by file_processing service
                 video_path = os.path.join(temp_dir, "input" + os.path.splitext(file.filename)[1])
-                head_direction_task = asyncio.to_thread(
-                    self.head_direction_analyzer.analyze_video, video_path
+                head_direction_task = measure_task(
+                    "Head Direction", self.head_direction_analyzer.analyze_video, video_path
                 )
-                wpm_data, filler_analysis, loudness_analysis, head_direction_analysis = await asyncio.gather(
+                wpm_data, filler_analysis, loudness_analysis, intonation_analysis, head_direction_analysis = await asyncio.gather(
                     wpm_task,
                     filler_task,
                     loudness_task,
+                    intonation_task,
                     head_direction_task,
                 )
             else:
-                wpm_data, filler_analysis, loudness_analysis = await asyncio.gather(
+                wpm_data, filler_analysis, loudness_analysis, intonation_analysis = await asyncio.gather(
                     wpm_task,
                     filler_task,
                     loudness_task,
+                    intonation_task,
                 )
                 head_direction_analysis = None
+            
+            t4 = datetime.now().strftime("%H:%M:%S")
+            d2 = time.perf_counter() - step2_start
+            print(f"[{t4}] --- Step 2 Finished in {d2:.2f}s: All analyses complete ---")
+            total_time = time.perf_counter() - start_total
+            print(f"[{t4}] !!! Total Processing Time: {total_time:.2f}s !!!")
             
             # Update analysis record with results
             analysis.file_type = file_type
@@ -92,6 +125,7 @@ class AnalysisController:
             analysis.captions = captions
             analysis.wpm_data = wpm_data
             analysis.head_direction_analysis = head_direction_analysis
+            analysis.intonation_analysis = intonation_analysis
             db.commit()
             db.refresh(analysis)
             
@@ -105,6 +139,7 @@ class AnalysisController:
                     "filler_word_analysis": filler_analysis,
                     "loudness_analysis": loudness_analysis,
                     "head_direction_analysis": head_direction_analysis,
+                    "intonation_analysis": intonation_analysis,
                     "created_at": analysis.created_at.isoformat()
                 },
                 message="Analysis completed and saved successfully",
@@ -142,6 +177,7 @@ class AnalysisController:
                 "transcript": analysis.transcript,
                 "wpm_data": analysis.wpm_data,
                 "head_direction_analysis": analysis.head_direction_analysis,
+                "intonation_analysis": analysis.intonation_analysis,
                 "error_message": analysis.error_message,
                 "created_at": analysis.created_at.isoformat(),
                 "updated_at": analysis.updated_at.isoformat()

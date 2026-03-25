@@ -1,3 +1,4 @@
+import asyncio
 import os
 import subprocess
 import mimetypes
@@ -102,6 +103,7 @@ class FileProcessingService:
             # Save uploaded file
             file_ext = os.path.splitext(file.filename)[1]
             input_path = os.path.join(temp_dir, f"input{file_ext}")
+            print(f"Saving uploaded file to {input_path}...")
 
             with open(input_path, "wb") as f:
                 content = await file.read()
@@ -119,11 +121,13 @@ class FileProcessingService:
             audio_path = os.path.join(
                 temp_dir, "audio.wav"
             )  # WAV format for loudness analysis
-            if not self.extract_audio(input_path, audio_path):
+            print(f"Extracting audio using FFmpeg...")
+            if not await asyncio.to_thread(self.extract_audio, input_path, audio_path):
                 raise HTTPException(status_code=500, detail="Failed to extract audio")
 
             # Transcribe
-            transcript = self.transcribe_audio(audio_path)
+            print(f"Broadcasting to AssemblyAI for transcription...")
+            transcript = await asyncio.to_thread(self.transcribe_audio, audio_path)
             if not transcript:
                 raise HTTPException(status_code=500, detail="Transcription failed")
 
