@@ -1,4 +1,5 @@
-from fastapi import APIRouter, UploadFile, File
+from fastapi import APIRouter, UploadFile, File, Form
+from typing import Optional
 from ..middleware.auth import CurrentUser
 from ..config.db import DbSession
 from ..controllers.analysis import AnalysisController
@@ -11,14 +12,15 @@ controller = AnalysisController()
 async def analyze_file(
     current_user: CurrentUser,
     db: DbSession,
-    file: UploadFile = File(..., description="Audio or video file (mp3, mp4, wav, avi) - Max 20MB")
+    file: UploadFile = File(..., description="Audio or video file (mp3, mp4, wav, avi) - Max 20MB"),
+    topic: Optional[str] = Form(None, description="The topic to analyze coverage for")
 ):
     """
     Upload and analyze audio/video file.
-    Extracts audio, transcribes, and calculates WPM.
+    Extracts audio, transcribes, calculates WPM, and semantic similarity to topic.
     Returns analysis results immediately (synchronous processing).
     """
-    return await controller.create_analysis(file, current_user, db)
+    return await controller.create_analysis(file, current_user, db, topic)
 
 
 @router.get("/{analysis_id}")

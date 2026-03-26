@@ -17,6 +17,7 @@ class Analysis(Base):
     wpm_data = Column(JSON, nullable=True)  # JSON array of WPM analysis
     head_direction_analysis = Column(JSON, nullable=True)  # JSON object of head direction analysis
     intonation_analysis = Column(JSON, nullable=True)  # JSON object of intonation/emphasis analysis
+    topic_coverage = Column(JSON, nullable=True)  # JSON object of topic/semantic coverage analysis
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
