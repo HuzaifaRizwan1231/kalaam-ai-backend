@@ -13,14 +13,15 @@ async def analyze_file(
     current_user: CurrentUser,
     db: DbSession,
     file: UploadFile = File(..., description="Audio or video file (mp3, mp4, wav, avi) - Max 20MB"),
-    topic: Optional[str] = Form(None, description="The topic to analyze coverage for")
+    topic: Optional[str] = Form(None, description="The topic to analyze coverage for"),
+    audience_position: Optional[str] = Form("front", description="Audience position: front, left, right, both")
 ):
     """
     Upload and analyze audio/video file.
     Extracts audio, transcribes, calculates WPM, and semantic similarity to topic.
     Returns analysis results immediately (synchronous processing).
     """
-    return await controller.create_analysis(file, current_user, db, topic)
+    return await controller.create_analysis(file, current_user, db, topic, audience_position)
 
 
 @router.get("/{analysis_id}")

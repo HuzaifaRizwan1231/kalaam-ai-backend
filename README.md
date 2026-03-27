@@ -12,6 +12,12 @@ A FastAPI-based backend server for the Kalaam AI project with PostgreSQL databas
 6. [API Documentation](#api-documentation)
 7. [Project Structure](#project-structure)
 8. [Troubleshooting](#troubleshooting)
+9. [Analysis Modules Detailed Overview](ANALYSIS_MODULES.md)
+
+---
+
+> [!NOTE]
+> For a detailed technical breakdown of how the speech, video, and intonation analysis works, please refer to [ANALYSIS_MODULES.md](ANALYSIS_MODULES.md).
 
 ## Prerequisites
 

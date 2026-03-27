@@ -32,54 +32,72 @@ def _robust_threshold(scores):
     mad = np.median(np.abs(scores - median)) + 1e-6
     return median + 1.0 * mad
 
+import parselmouth
+
 # ---------------------------
-# Prosody extraction using pyin
+# Prosody extraction using Praat (Parselmouth)
 # ---------------------------
 def _get_prosody_features(audio_path: str):
-    # Use a consistent hop_length for all features
-    HOP_LENGTH = 1024
-    
-    # Load at 16k for significantly faster processing
-    y, sr = librosa.load(audio_path, sr=16000)
-
-    if len(y) == 0:
+    """
+    Extracts fundamental frequency (F0/Pitch) and Intensity (Energy) 
+    using the Praat (Boersma-CC) algorithm via Parselmouth.
+    Significantly faster and more robust than librosa.pyin.
+    """
+    try:
+        snd = parselmouth.Sound(audio_path)
+    except Exception as e:
+        print(f"Error loading sound in Praat: {e}")
         return np.array([]), np.array([]), np.array([]), np.array([])
 
-    # Energy (Explicit hop_length to match pyin)
-    energy = librosa.feature.rms(y=y, hop_length=HOP_LENGTH)[0]
-    energy = _smooth(energy)
-    energy_norm = energy / np.max(energy) if np.max(energy) > 0 else energy
+    if snd.duration == 0:
+        return np.array([]), np.array([]), np.array([]), np.array([])
 
-    # Pitch (F0) using pyin
-    # Use the same HOP_LENGTH
-    f0, voiced_flag, voiced_prob = librosa.pyin(
-        y,
-        fmin=librosa.note_to_hz("C2"),
-        fmax=librosa.note_to_hz("C7"),
-        sr=sr,
-        hop_length=HOP_LENGTH
-    )
-    f0 = np.nan_to_num(f0)
+    # High-precision pitch tracking
+    # floor 75, ceiling 600 covers typical human speech range
+    pitch = snd.to_pitch(time_step=0.01, pitch_floor=75, pitch_ceiling=600)
+    
+    # Calculate Intensity (Loudness) aligned with pitch
+    intensity = snd.to_intensity(minimum_pitch=75, time_step=0.01)
+    
+    # Get raw arrays
+    f0 = pitch.selected_array['frequency']
+    times = pitch.xs()
+    
+    # Align intensity to pitch timestamps
+    energy = []
+    for t in times:
+        try:
+            val = intensity.get_value(t)
+            energy.append(val if not np.isnan(val) else 0.0)
+        except Exception:
+            energy.append(0.0)
+    
+    energy = np.array(energy)
+    
+    # Voiced probability: Use Praat's classification (f0 > 0 means voiced)
+    voiced_prob = np.where(f0 > 0, 1.0, 0.0)
+    
+    # Normalize Energy (Intensity)
+    # Energy is in dB, shift to 0-1 range for scoring
+    # Typical speech is 50-85 dB
+    if len(energy) > 0 and np.max(energy) > 0:
+        energy_min = np.min(energy[energy > 0]) if np.any(energy > 0) else 0
+        energy_diff = (np.max(energy) - energy_min) + 1e-6
+        energy_norm = (energy - energy_min) / energy_diff
+        energy_norm = np.clip(energy_norm, 0, 1)
+    else:
+        energy_norm = energy
 
-    # Ensure all arrays match in length (sometimes pyin/rms differ by 1-2 frames due to padding)
-    min_len = min(len(energy_norm), len(f0), len(voiced_prob))
-    energy_norm = energy_norm[:min_len]
-    f0 = f0[:min_len]
-    voiced_prob = voiced_prob[:min_len]
-
-    # Filter low-confidence pitch frames
-    f0[voiced_prob < 0.6] = 0.0
-
+    # Filter/Smooth F0
     f0 = _smooth(f0)
+    
+    # Normalize F0
     voiced_f0 = f0[f0 > 0]
     if len(voiced_f0) > 0:
         f0_norm = f0 / np.max(voiced_f0)
     else:
         f0_norm = f0
-
-    # Ensure times matches length exactly
-    times = np.linspace(0, len(y) / sr, min_len)
-
+        
     return energy_norm, f0_norm, times, voiced_prob
 
 # ---------------------------
@@ -164,34 +182,37 @@ class IntonationAnalyzer:
             word_pitch = float(np.mean(pitch[idx]))
             pitch_conf = float(np.mean(voiced_prob[idx]))
 
-            # Penalize tiny pitch changes
-            pitch_delta = float(np.max(pitch[idx]) - np.min(pitch[idx]))
-
+            # Use STD instead of range for more robust local movement detection
+            pitch_std = float(np.std(pitch[idx]))
+            
             duration_norm = duration / avg_duration
-
+            
+            # Weighted word score
             score = (
                 energy_weight * word_energy +
                 pitch_weight * word_pitch * pitch_conf +
                 0.1 * duration_norm
             )
-
-            # Penalize flat pitch
-            if pitch_delta < 0.1:
-                score *= 0.7
-            # Penalize silence
+            
+            # Penalize extremadamente flat words
+            if pitch_std < 0.02:
+                score *= 0.8
+                
+            # Penalize absolute silences
             if word_energy < 0.05:
                 score *= 0.5
-            # Pause-based boost
+                
+            # Pause-based boost (emphasis often follows pauses)
             if gaps[i] > 0.2:
-                score += 0.1
-
+                score += 0.05
+            
             word_scores.append({
                 "word": word,
                 "start": round(start_sec, 3),
                 "end": round(end_sec, 3),
                 "energy": round(word_energy, 4),
                 "pitch": round(word_pitch, 4),
-                "pitch_delta": round(pitch_delta, 4),
+                "pitch_delta": round(pitch_std, 4), # Rename back but stores STD
                 "score": round(score, 4),
                 "emphasized": False,
                 "is_content_word": is_content
@@ -244,18 +265,24 @@ class IntonationAnalyzer:
             e_vals = [w["energy"] for w in word_scores]
             e_std = float(np.std(e_vals))
             
-            # Monotone Check: Monotone speakers typically have very low pitch std (< 0.08)
-            # and low internal word movement (delta < 0.1).
-            # Obama-style expressive speech has p_std > 0.15 and deltas > 0.2.
-            
             # Scoring formula (Weights tuned for absolute expressiveness)
+            # We prioritize global variation (p_std) and volume dynamics (e_std).
+            # Local jitter (p_avg_delta) is often a sign of monotone/unstable speech rather than expressivity.
             base_score = (
-                0.40 * p_std + 
-                0.35 * p_avg_delta + 
+                0.60 * p_std + 
                 0.15 * p_range + 
-                0.10 * e_std
+                0.25 * e_std
             )
             
+            # Penalize local jitter (p_avg_delta). Stable, expressive speech has low-to-moderate intra-word movement.
+            # Jittery vocal fry or nervous monotone often creates high local deltas.
+            if p_avg_delta > 0.12:
+                base_score -= (p_avg_delta - 0.12) * 0.4
+            
+            # Penalize monotone volume
+            if e_std < 0.10:
+                base_score *= 0.8
+                
             # Penalty for high unvoiced ratio in content words (monotone/robotic sign)
             content_voiced_count = sum(1 for w in word_scores if w["is_content_word"] and w["pitch"] > 0)
             total_content = sum(1 for w in word_scores if w["is_content_word"])
@@ -265,8 +292,7 @@ class IntonationAnalyzer:
                 base_score *= 0.7 # Significant penalty for choppy/robotic unvoiced speech
                 
             # Scale to 0-1 range. 
-            # 0.3-0.4 is typically very expressive.
-            intonation_score = min(1.0, base_score * 2.5)
+            intonation_score = max(0.0, min(1.0, base_score * 3.5)) 
 
         # Labels based on the new 0-1 scale
         if intonation_score < 0.25:
