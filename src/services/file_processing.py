@@ -65,7 +65,10 @@ class FileProcessingService:
         """Transcribe audio using AssemblyAI"""
         try:
             config = aai.TranscriptionConfig(
-                punctuate=True, format_text=True, disfluencies=True
+                speech_models=["universal-2"],
+                punctuate=True,
+                format_text=True,
+                disfluencies=True,
             )
             transcript = self.transcriber.transcribe(audio_path, config)
 

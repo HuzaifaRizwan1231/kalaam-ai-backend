@@ -23,7 +23,6 @@ class Analysis(Base):
     intonation_analysis = Column(
         JSON, nullable=True
     )  # JSON object of intonation/emphasis analysis
-    clarity_analysis = Column(JSON, nullable=True)
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(

@@ -36,17 +36,21 @@ def _normalize_angle(angle: float) -> float:
 
 def _classify_direction(yaw: float, pitch: float, roll: float) -> str:
     """Classify head direction from yaw/pitch/roll angles"""
+    # yaw (left-right), pitch (up-down), roll (tilt)
+    # Pitch: Negative = Up, Positive = Down
+    # Yaw: Negative = Right, Positive = Left
+    
     if (
         abs(yaw) < YAW_THRESHOLD
-        and -PITCH_THRESHOLD_UP < pitch < PITCH_THRESHOLD_DOWN
+        and abs(pitch) < PITCH_THRESHOLD_DOWN
         and abs(roll) < ROLL_THRESHOLD
     ):
         return "LookingAtCamera"
 
     if abs(yaw) >= YAW_THRESHOLD:
-        return "LookingDown" if yaw > 0 else "LookingRight"
+        return "LookingLeft" if yaw > 0 else "LookingRight"
     elif pitch >= PITCH_THRESHOLD_DOWN:
-        return "LookingLeft"
+        return "LookingDown"
     elif pitch <= -PITCH_THRESHOLD_UP:
         return "LookingUp"
     elif abs(roll) >= ROLL_THRESHOLD:
@@ -58,18 +62,40 @@ class HeadDirectionAnalyzer:
     Service to analyze head direction in a video using OpenCV and MediaPipe FaceMesh.
     """
 
-    def analyze_video(self, video_path: str, sample_every_n_frames: int = 30) -> Dict:
+    def analyze_video(self, video_path: str, sample_every_n_frames: int = 30, audience_position: str = "front") -> Dict:
+        """
+        Analyze head direction and eye contact.
+        audience_position: "front", "left", "right", "both"
+        """
+        import time
         cap = cv2.VideoCapture(video_path)
+        
+        # Windows file system/OpenCV race condition retry
+        if not cap.isOpened():
+            print(f"DEBUG: Initial OpenCV open failed for {video_path}. Retrying in 0.5s...")
+            time.sleep(0.5)
+            cap = cv2.VideoCapture(video_path)
+
         if not cap.isOpened():
             raise ValueError(f"Cannot open video file: {video_path}")
 
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         frame_duration = 1.0 / fps
 
-        looking_time = 0.0
+        good_contact_time = 0.0
         not_looking_time = 0.0
         direction_timeline: List[Dict] = []
         direction_counts: Dict[str, float] = {}
+
+        # Define what counts as "Good" eye contact based on audience position
+        good_statuses = {"LookingAtCamera"}
+        if audience_position == "left":
+            good_statuses.add("LookingLeft")
+        elif audience_position == "right":
+            good_statuses.add("LookingRight")
+        elif audience_position == "both":
+            good_statuses.add("LookingLeft")
+            good_statuses.add("LookingRight")
 
         frame_index = 0
 
@@ -93,7 +119,7 @@ class HeadDirectionAnalyzer:
                 if frame_index % sample_every_n_frames != 0:
                     continue
 
-                if frame_index % 50 == 0:
+                if frame_index % 100 == 0:
                     print(f"Processing frame {frame_index}...")
 
                 # Resize for performance if frame is too large
@@ -119,11 +145,7 @@ class HeadDirectionAnalyzer:
 
                     focal_length = float(w)
                     cam_matrix = np.array(
-                        [
-                            [focal_length, 0, w / 2],
-                            [0, focal_length, h / 2],
-                            [0, 0, 1]
-                        ],
+                        [[focal_length, 0, w / 2], [0, focal_length, h / 2], [0, 0, 1]],
                         dtype=np.float64
                     )
                     dist_coeffs = np.zeros((4, 1))
@@ -140,8 +162,8 @@ class HeadDirectionAnalyzer:
 
                 # Accumulate time
                 segment_duration = sample_every_n_frames * frame_duration
-                if status == "LookingAtCamera":
-                    looking_time += segment_duration
+                if status in good_statuses:
+                    good_contact_time += segment_duration
                 else:
                     not_looking_time += segment_duration
 
@@ -157,8 +179,8 @@ class HeadDirectionAnalyzer:
 
         cap.release()
 
-        total_time = looking_time + not_looking_time
-        percentage_looking = (looking_time / total_time * 100) if total_time > 0 else 0.0
+        total_time = good_contact_time + not_looking_time
+        percentage_looking = (good_contact_time / total_time * 100) if total_time > 0 else 0.0
 
         direction_breakdown = {
             direction: round((secs / total_time) * 100, 2) if total_time > 0 else 0.0
@@ -166,7 +188,8 @@ class HeadDirectionAnalyzer:
         }
 
         return {
-            "looking_time": round(looking_time, 2),
+            "audience_position": audience_position,
+            "looking_time": round(good_contact_time, 2),
             "not_looking_time": round(not_looking_time, 2),
             "total_time": round(total_time, 2),
             "percentage_looking": round(percentage_looking, 2),

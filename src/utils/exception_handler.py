@@ -27,6 +27,20 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 
+async def general_exception_handler(request: Request, exc: Exception):
+    """Catch all internal server errors and return as standardized JSON"""
+    # Log the full traceback if it is in dev/test
+    import traceback
+    print(f"ERROR: {exc}")
+    traceback.print_exc()
+    
+    response = ResponseBuilder.error(f"Internal Server Error: {str(exc)}", status.HTTP_500_INTERNAL_SERVER_ERROR)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content=response
+    )
+
+
 def register_exception_handlers(app):
     """Register all exception handlers for the FastAPI app"""
     from slowapi import _rate_limit_exceeded_handler
@@ -35,3 +49,4 @@ def register_exception_handlers(app):
     app.add_exception_handler(HTTPException, http_exception_handler)
     app.add_exception_handler(RequestValidationError, validation_exception_handler)
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.add_exception_handler(Exception, general_exception_handler)
