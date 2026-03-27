@@ -111,7 +111,7 @@ class AnalysisController:
                 captions,
             )
             clarity_task = measure_task(
-                "Clarity", self.clarity_analyzer.analyze_clarity, audio_path
+                "Clarity", self.clarity_analyzer.compute_clarity, audio_path
             )
 
             # Head direction analysis only makes sense for video files
