@@ -15,7 +15,10 @@ class Analysis(Base):
     transcript = Column(Text, nullable=True)
     captions = Column(JSON, nullable=True)  # JSON array of word-level captions
     wpm_data = Column(JSON, nullable=True)  # JSON array of WPM analysis
+    filler_word_analysis = Column(JSON, nullable=True)  # JSON object of filler word analysis
+    loudness_analysis = Column(JSON, nullable=True)  # JSON object of loudness analysis
     head_direction_analysis = Column(JSON, nullable=True)  # JSON object of head direction analysis
+    facial_expression_analysis = Column(JSON, nullable=True)  # JSON object of facial expression analysis
     intonation_analysis = Column(JSON, nullable=True)  # JSON object of intonation/emphasis analysis
     topic_coverage = Column(JSON, nullable=True)  # JSON object of topic/semantic coverage analysis
     error_message = Column(Text, nullable=True)

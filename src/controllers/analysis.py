@@ -13,6 +13,7 @@ from ..services.filler_word_analyzer import FillerWordAnalyzer
 from ..services.loudness_analyzer import LoudnessAnalyzer
 from ..services.wpm_analyzer import WPMAnalyzer
 from ..services.head_direction_analyzer import HeadDirectionAnalyzer
+from ..services.facial_expression_analyzer import FacialExpressionAnalyzer
 from ..services.intonation_analyzer import IntonationAnalyzer
 from ..services.topic_coverage_analyzer import TopicCoverageAnalyzer
 from ..services.conclusion_generator import ConclusionGenerator
@@ -42,6 +43,12 @@ def _head_direction_worker(video_path, audience_position="front"):
     from ..services.head_direction_analyzer import HeadDirectionAnalyzer
     return HeadDirectionAnalyzer().analyze_video(abs_path, audience_position=audience_position)
 
+def _facial_expression_worker(video_path):
+    import os
+    abs_path = os.path.abspath(video_path)
+    from ..services.facial_expression_analyzer import FacialExpressionAnalyzer
+    return FacialExpressionAnalyzer().analyze_video(abs_path)
+
 def _loudness_worker(audio_path):
     from ..services.loudness_analyzer import LoudnessAnalyzer
     return LoudnessAnalyzer().analyze_loudness(audio_path)
@@ -61,6 +68,7 @@ class AnalysisController:
         self.loudness_analyzer = LoudnessAnalyzer()
         self.wpm_analyzer = WPMAnalyzer()
         self.head_direction_analyzer = HeadDirectionAnalyzer()
+        self.facial_expression_analyzer = FacialExpressionAnalyzer()
         self.intonation_analyzer = IntonationAnalyzer()
         self.topic_analyzer = TopicCoverageAnalyzer()
         self.conclusion_generator = ConclusionGenerator()
@@ -148,8 +156,10 @@ class AnalysisController:
             
             # 4. Local Video Analysis (HEAVY CPU, in separate process)
             head_direction_task = None
+            facial_expression_task = None
             if file_type == "video":
                 head_direction_task = asyncio.create_task(measure_task("Head Direction", _cpu_executor, _head_direction_worker, input_path, audience_position))
+                facial_expression_task = asyncio.create_task(measure_task("Facial Expression", _cpu_executor, _facial_expression_worker, input_path))
 
             # --- PHASE 3: DEPENDENT TASKS (REQUIRES TRANSCRIPTION) ---
             print(f"[{datetime.now().strftime('%H:%M:%S')}] --- Phase 3: Waiting for transcript & scoring results ---")
@@ -184,7 +194,13 @@ class AnalysisController:
             if topic_task: dependent_tasks.append(topic_task)
             
             # Re-gather everything with return_exceptions=True to avoid cascading file failures
-            results = await asyncio.gather(loudness_task, head_direction_task or asyncio.sleep(0), *dependent_tasks, return_exceptions=True)
+            results = await asyncio.gather(
+                loudness_task, 
+                head_direction_task or asyncio.sleep(0), 
+                facial_expression_task or asyncio.sleep(0),
+                *dependent_tasks, 
+                return_exceptions=True
+            )
             
             # Unpack and handle exceptions
             def check_res(r, name):
@@ -195,24 +211,25 @@ class AnalysisController:
 
             loudness_analysis = check_res(results[0], "Loudness")
             head_direction_analysis = check_res(results[1], "Head Direction")
+            facial_expression_analysis = check_res(results[2], "Facial Expression")
             
-            wpm_res = check_res(results[2], "WPM")
+            wpm_res = check_res(results[3], "WPM")
             wpm_analysis = {
                 "intervals": wpm_res or [],
                 "conclusion": "No pacing data" if not wpm_res else None
             }
             
-            filler_analysis = check_res(results[3], "Filler")
+            filler_analysis = check_res(results[4], "Filler")
             if not filler_analysis:
                 filler_analysis = {"fillers": [], "filler_counts": {}, "total_words": 0, "filler_percentage": 0}
 
-            intonation_analysis = check_res(results[4], "Intonation")
+            intonation_analysis = check_res(results[5], "Intonation")
             if not intonation_analysis:
                 intonation_analysis = {"emphasized_words": [], "total_words": 0, "total_content_words": 0, "total_emphasized": 0, "emphasis_percentage": 0, "average_prosody_score": 0, "word_scores": [], "conclusion": "Scoring failed"}
 
             topic_coverage = None
             if topic_task:
-                topic_coverage = check_res(results[5], "Topic Coverage")
+                topic_coverage = check_res(results[6], "Topic Coverage")
 
             # --- PHASE 4: GENERATE CONCLUSIONS ---
             # Summarize scores for humans
@@ -223,6 +240,9 @@ class AnalysisController:
             if head_direction_analysis:
                 head_direction_analysis["conclusion"] = self.conclusion_generator.get_eye_contact_conclusion(head_direction_analysis, audience_position)
             
+            if facial_expression_analysis:
+                facial_expression_analysis["conclusion"] = self.conclusion_generator.get_expression_conclusion(facial_expression_analysis)
+
             if topic_coverage:
                 topic_coverage["conclusion"] = self.conclusion_generator.get_relevance_conclusion(topic_coverage)
 
@@ -235,7 +255,10 @@ class AnalysisController:
             analysis.transcript = transcript
             analysis.captions = captions
             analysis.wpm_data = wpm_analysis
+            analysis.filler_word_analysis = filler_analysis
+            analysis.loudness_analysis = loudness_analysis
             analysis.head_direction_analysis = head_direction_analysis
+            analysis.facial_expression_analysis = facial_expression_analysis
             analysis.intonation_analysis = intonation_analysis
             analysis.topic_coverage = topic_coverage
             db.commit()
@@ -251,6 +274,7 @@ class AnalysisController:
                     "filler_word_analysis": filler_analysis,
                     "loudness_analysis": loudness_analysis,
                     "head_direction_analysis": head_direction_analysis,
+                    "facial_expression_analysis": facial_expression_analysis,
                     "intonation_analysis": intonation_analysis,
                     "topic_coverage": topic_coverage,
                     "created_at": analysis.created_at.isoformat()
@@ -270,7 +294,8 @@ class AnalysisController:
             # before we delete the temp directory, otherwise workers might crash
             # trying to read from a deleted location.
             all_tasks = [
-                transcription_task, prosody_task, loudness_task, head_direction_task, 
+                transcription_task, prosody_task, loudness_task, 
+                head_direction_task, facial_expression_task,
                 wpm_task, filler_task, intonation_task, topic_task
             ]
             running_tasks = [t for t in all_tasks if t and not t.done()]
@@ -306,6 +331,7 @@ class AnalysisController:
                 "transcript": analysis.transcript,
                 "wpm_data": analysis.wpm_data,
                 "head_direction_analysis": analysis.head_direction_analysis,
+                "facial_expression_analysis": analysis.facial_expression_analysis,
                 "intonation_analysis": analysis.intonation_analysis,
                 "topic_coverage": analysis.topic_coverage,
                 "error_message": analysis.error_message,
