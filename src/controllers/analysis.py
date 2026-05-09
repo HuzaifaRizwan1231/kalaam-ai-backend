@@ -12,9 +12,8 @@ from ..services.file_processing import FileProcessingService
 from ..services.filler_word_analyzer import FillerWordAnalyzer
 from ..services.loudness_analyzer import LoudnessAnalyzer
 from ..services.wpm_analyzer import WPMAnalyzer
-from ..services.head_direction_analyzer import HeadDirectionAnalyzer
-from ..services.facial_expression_analyzer import FacialExpressionAnalyzer
 from ..services.intonation_analyzer import IntonationAnalyzer
+from ..services.video_analyzer import VideoAnalyzer
 from ..services.topic_coverage_analyzer import TopicCoverageAnalyzer
 from ..services.conclusion_generator import ConclusionGenerator
 from ..utils.response_builder import ResponseBuilder
@@ -33,31 +32,11 @@ def _prosody_worker(audio_path):
     return IntonationAnalyzer().get_prosody_only(audio_path)
 
 
-def _head_direction_worker(video_path, audience_position="front"):
+def _video_analysis_worker(video_path, audience_position="front"):
     import os
-
+    from ..services.video_analyzer import VideoAnalyzer
     abs_path = os.path.abspath(video_path)
-    print(f"[{os.getpid()}] DEBUG: Video worker starting for: {abs_path}")
-    if not os.path.exists(abs_path):
-        print(f"[{os.getpid()}] ERROR: File not found at {abs_path}")
-        raise ValueError(f"File not found: {abs_path}")
-
-    print(
-        f"[{os.getpid()}] DEBUG: File exists. Size: {os.path.getsize(abs_path)} bytes"
-    )
-
-    from ..services.head_direction_analyzer import HeadDirectionAnalyzer
-
-    return HeadDirectionAnalyzer().analyze_video(
-        abs_path, audience_position=audience_position
-    )
-
-
-def _facial_expression_worker(video_path):
-    import os
-    abs_path = os.path.abspath(video_path)
-    from ..services.facial_expression_analyzer import FacialExpressionAnalyzer
-    return FacialExpressionAnalyzer().analyze_video(abs_path)
+    return VideoAnalyzer().analyze_video(abs_path, audience_position=audience_position)
 
 def _loudness_worker(audio_path):
     from ..services.loudness_analyzer import LoudnessAnalyzer
@@ -78,9 +57,8 @@ class AnalysisController:
         self.filler_analyzer = FillerWordAnalyzer()
         self.loudness_analyzer = LoudnessAnalyzer()
         self.wpm_analyzer = WPMAnalyzer()
-        self.head_direction_analyzer = HeadDirectionAnalyzer()
-        self.facial_expression_analyzer = FacialExpressionAnalyzer()
         self.intonation_analyzer = IntonationAnalyzer()
+        self.video_analyzer = VideoAnalyzer()
         self.topic_analyzer = TopicCoverageAnalyzer()
         self.conclusion_generator = ConclusionGenerator()
 
@@ -173,12 +151,10 @@ class AnalysisController:
             # 3. Local Loudness (Fast Thread)
             loudness_task = asyncio.create_task(measure_task("Loudness", None, self.loudness_analyzer.analyze_loudness, audio_path))
             
-            # 4. Local Video Analysis (HEAVY CPU, in separate process)
-            head_direction_task = None
-            facial_expression_task = None
+            # 4. Local Video Analysis (HEAVY CPU, combined in separate process)
+            video_task = None
             if file_type == "video":
-                head_direction_task = asyncio.create_task(measure_task("Head Direction", _cpu_executor, _head_direction_worker, input_path, audience_position))
-                facial_expression_task = asyncio.create_task(measure_task("Facial Expression", _cpu_executor, _facial_expression_worker, input_path))
+                video_task = asyncio.create_task(measure_task("Video Analysis", _cpu_executor, _video_analysis_worker, input_path, audience_position))
 
             # --- PHASE 3: DEPENDENT TASKS (REQUIRES TRANSCRIPTION) ---
             print(f"[{datetime.now().strftime('%H:%M:%S')}] --- Phase 3: Waiting for transcript & scoring results ---")
@@ -215,8 +191,7 @@ class AnalysisController:
             # Re-gather everything with return_exceptions=True to avoid cascading file failures
             results = await asyncio.gather(
                 loudness_task, 
-                head_direction_task or asyncio.sleep(0), 
-                facial_expression_task or asyncio.sleep(0),
+                video_task or asyncio.sleep(0), 
                 *dependent_tasks, 
                 return_exceptions=True
             )
@@ -229,26 +204,28 @@ class AnalysisController:
                 return r
 
             loudness_analysis = check_res(results[0], "Loudness")
-            head_direction_analysis = check_res(results[1], "Head Direction")
-            facial_expression_analysis = check_res(results[2], "Facial Expression")
+            video_analysis = check_res(results[1], "Video Analysis")
             
-            wpm_res = check_res(results[3], "WPM")
+            head_direction_analysis = video_analysis["head"] if video_analysis else None
+            facial_expression_analysis = video_analysis["expression"] if video_analysis else None
+            
+            wpm_res = check_res(results[2], "WPM")
             wpm_analysis = {
                 "intervals": wpm_res or [],
                 "conclusion": "No pacing data" if not wpm_res else None
             }
             
-            filler_analysis = check_res(results[4], "Filler")
+            filler_analysis = check_res(results[3], "Filler")
             if not filler_analysis:
                 filler_analysis = {"fillers": [], "filler_counts": {}, "total_words": 0, "filler_percentage": 0}
 
-            intonation_analysis = check_res(results[5], "Intonation")
+            intonation_analysis = check_res(results[4], "Intonation")
             if not intonation_analysis:
                 intonation_analysis = {"emphasized_words": [], "total_words": 0, "total_content_words": 0, "total_emphasized": 0, "emphasis_percentage": 0, "average_prosody_score": 0, "word_scores": [], "conclusion": "Scoring failed"}
 
             topic_coverage = None
             if topic_task:
-                topic_coverage = check_res(results[6], "Topic Coverage")
+                topic_coverage = check_res(results[5], "Topic Coverage")
 
             # --- PHASE 4: GENERATE CONCLUSIONS ---
             # Summarize scores for humans
