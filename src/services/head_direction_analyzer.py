@@ -2,6 +2,7 @@ import cv2
 import mediapipe as mp
 import numpy as np
 from typing import Dict, List
+from datetime import datetime
 
 # ---------------------------
 # Configurable Thresholds for Head Orientation
@@ -93,7 +94,7 @@ class HeadDirectionAnalyzer:
         
         # Windows-specific retry logic for I/O locks/race conditions
         if not cap.isOpened():
-            print(f"DEBUG: Initial OpenCV open failed for {video_path}. Retrying in 0.5s...")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] DEBUG: Initial OpenCV open failed for {video_path}. Retrying in 0.5s...")
             time.sleep(0.5)
             cap = cv2.VideoCapture(video_path)
 
@@ -101,6 +102,8 @@ class HeadDirectionAnalyzer:
             raise ValueError(f"Cannot open video file: {video_path}")
 
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Total frames in video: {total_frames} (sampling every {sample_every_n_frames})")
         frame_duration = 1.0 / fps
 
         good_contact_time = 0.0
@@ -129,20 +132,18 @@ class HeadDirectionAnalyzer:
             min_detection_confidence=0.5
         ) as face_mesh:
 
-            while True:
+            while frame_index < total_frames:
+                # Seek to the target frame directly to avoid decoding intermediate frames
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
                 ret, frame = cap.read()
                 if not ret:
                     break
 
                 elapsed = frame_index * frame_duration
-                frame_index += 1
-
-                # Skip frames to reduce CPU load and increase through-put
-                if frame_index % sample_every_n_frames != 0:
-                    continue
+                frame_index += sample_every_n_frames
 
                 if frame_index % 100 == 0:
-                    print(f"Processing frame {frame_index}...")
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] [Head] Processing frame {frame_index}...")
 
                 # Optimization: Resize large 4K/1080p frames to 640px to speed up inference
                 # MediaPipe doesn't need high resolution for face silhouette tracking.

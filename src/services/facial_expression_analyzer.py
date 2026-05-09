@@ -2,6 +2,7 @@ import cv2
 import mediapipe as mp
 import numpy as np
 from typing import Dict, List, Optional
+from datetime import datetime
 
 class FacialExpressionAnalyzer:
     """
@@ -67,7 +68,7 @@ class FacialExpressionAnalyzer:
         else:
             return "Calm"
 
-    def analyze_video(self, video_path: str, sample_every_n_frames: int = 5) -> Dict:
+    def analyze_video(self, video_path: str, sample_every_n_frames: int = 30) -> Dict:
         """
         Processes a video file to generate a facial expression report.
         """
@@ -82,6 +83,8 @@ class FacialExpressionAnalyzer:
             raise ValueError(f"Cannot open video file: {video_path}")
 
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Total frames in video: {total_frames} (sampling every {sample_every_n_frames})")
         frame_duration = 1.0 / fps
 
         expression_counts: Dict[str, float] = {
@@ -106,17 +109,18 @@ class FacialExpressionAnalyzer:
             min_detection_confidence=0.5
         ) as face_mesh:
 
-            while True:
+            while frame_index < total_frames:
+                # Seek to the target frame directly
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
                 ret, frame = cap.read()
                 if not ret:
                     break
 
                 elapsed = frame_index * frame_duration
-                frame_index += 1
+                frame_index += sample_every_n_frames
 
-                # We sample more frequently for expressions as they can be fleeting
-                if frame_index % sample_every_n_frames != 0:
-                    continue
+                if frame_index % 100 == 0:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] [Facial] Processing frame {frame_index}...")
 
                 h, w = frame.shape[:2]
                 # Optimization: Resize for faster inference

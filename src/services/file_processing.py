@@ -4,6 +4,7 @@ import subprocess
 import mimetypes
 import tempfile
 import assemblyai as aai
+from datetime import datetime
 from typing import Tuple, List, Dict, Optional
 from fastapi import UploadFile, HTTPException
 
@@ -82,7 +83,7 @@ class FileProcessingService:
             return True
         except subprocess.CalledProcessError as e:
             # Captures standard error for debugging purpose
-            print(f"FFmpeg CLI Exception: {e.stderr.decode()}")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] FFmpeg CLI Exception: {e.stderr.decode()}")
             return False
 
     def transcribe_audio(self, audio_path: str) -> Optional[aai.Transcript]:
@@ -107,12 +108,12 @@ class FileProcessingService:
             transcript = self.transcriber.transcribe(audio_path, config)
 
             if transcript.status == aai.TranscriptStatus.error:
-                print(f"AssemblyAI Cloud Error: {transcript.error}")
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] AssemblyAI Cloud Error: {transcript.error}")
                 return None
 
             return transcript
         except Exception as e:
-            print(f"Transcription Client Exception: {str(e)}")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Transcription Client Exception: {str(e)}")
             return None
 
     @staticmethod
@@ -150,7 +151,7 @@ class FileProcessingService:
             # Step B: Secure Upload and I/O writing
             file_ext = os.path.splitext(file.filename)[1]
             input_path = os.path.join(temp_dir, f"input{file_ext}")
-            print(f"Ingesting file into: {input_path}")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Ingesting file into: {input_path}")
 
             with open(input_path, "wb") as f:
                 content = await file.read()
@@ -168,21 +169,16 @@ class FileProcessingService:
             # Step D: Media Conversion
             # Required for uniformity in analysis (Loudness, Intonation)
             audio_path = os.path.join(temp_dir, "audio.wav")
-            print(f"Processing media conversion (FFmpeg)...")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Processing media conversion (FFmpeg)...")
             # Thread isolation: Media conversion is CPU bound; we wrap it in to_thread to keep API responsive.
             if not await asyncio.to_thread(self.extract_audio, input_path, audio_path):
                 raise HTTPException(status_code=500, detail="FFmpeg extraction failure")
 
-            # Step E: Transcription Dispatch
-            print(f"Broadcasting to AssemblyAI (Cloud API)...")
-            transcript = await asyncio.to_thread(self.transcriber.transcribe, audio_path)
-            if not transcript:
-                raise HTTPException(status_code=500, detail="Global transcription failure")
-
-            # Step F: Structuring results
-            captions = self.extract_captions(transcript)
-
-            return transcript.text, captions, file_type, audio_path
+            # Step E: Transcription Dispatch (Skipped here to avoid double-processing)
+            # We only extract audio and return it for the async parallel pipeline
+            
+            # Step F: Structuring results (Skipped)
+            return None, None, file_type, audio_path
         except Exception as e:
             # Cleanup Hook: Ensure disk space is cleared on failure.
             import shutil

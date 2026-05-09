@@ -81,8 +81,10 @@ class AnalysisController:
         self.head_direction_analyzer = HeadDirectionAnalyzer()
         self.facial_expression_analyzer = FacialExpressionAnalyzer()
         self.intonation_analyzer = IntonationAnalyzer()
+        self.topic_analyzer = TopicCoverageAnalyzer()
+        self.conclusion_generator = ConclusionGenerator()
 
-    async def create_analysis(self, file: UploadFile, user: User, db: Session):
+    async def create_analysis(self, file: UploadFile, user: User, db: Session, topic: str = None, audience_position: str = "front"):
         """
         Process uploaded file and save analysis results in a highly parallel pipeline.
         Maximizes concurrency by starting independent analyzers while waiting for transcription.
@@ -94,6 +96,15 @@ class AnalysisController:
 
         audio_path = None
         temp_dir = None
+        transcription_task = None
+        prosody_task = None
+        loudness_task = None
+        head_direction_task = None
+        facial_expression_task = None
+        wpm_task = None
+        filler_task = None
+        intonation_task = None
+        topic_task = None
 
         # Create initial analysis record in database
         analysis = Analysis(
@@ -125,12 +136,17 @@ class AnalysisController:
 
             # Get temp directory from audio path for cleanup
             temp_dir = os.path.dirname(audio_path)
+            # Reconstruct original input path (assuming process_file followed the input+ext convention)
+            file_ext = os.path.splitext(file.filename)[1]
+            input_path = os.path.join(temp_dir, f"input{file_ext}")
 
             # Step 2: Run analyzers IN PARALLEL
             t3 = datetime.now().strftime("%H:%M:%S")
             step2_start = time.perf_counter()
+            
+            loop = asyncio.get_running_loop()
 
-            async def measure_task(name, func, *args):
+            async def measure_task(name, executor, func, *args):
                 start = time.perf_counter()
                 res = await loop.run_in_executor(executor, func, *args)
                 d = time.perf_counter() - start

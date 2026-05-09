@@ -37,7 +37,7 @@ class WPMAnalyzer:
         df["time_bin"] = pd.cut(df["start"], bins=time_bins, right=False)
         
         # 4. Aggregate: Count how many words appear in each bin
-        wpm_data = df.groupby("time_bin").size().reset_index(name="word_count")
+        wpm_data = df.groupby("time_bin", observed=False).size().reset_index(name="word_count")
         wpm_data["start_time"] = wpm_data["time_bin"].apply(lambda x: x.left)
         wpm_data["end_time"] = wpm_data["time_bin"].apply(lambda x: x.right)
         

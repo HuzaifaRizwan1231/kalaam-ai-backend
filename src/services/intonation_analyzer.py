@@ -2,7 +2,8 @@ import spacy
 import librosa
 import numpy as np
 import parselmouth
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
+from datetime import datetime
 
 # Load SpaCy model for NLP tasks (Stopwords, Lemmatization, POS tagging)
 nlp = spacy.load("en_core_web_sm")
@@ -66,7 +67,7 @@ def _get_prosody_features(audio_path: str):
     try:
         snd = parselmouth.Sound(audio_path)
     except Exception as e:
-        print(f"Error loading sound in Praat: {e}")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Error loading sound in Praat: {e}")
         return np.array([]), np.array([]), np.array([]), np.array([])
 
     if snd.duration == 0:
