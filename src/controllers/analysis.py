@@ -12,9 +12,8 @@ from ..services.file_processing import FileProcessingService
 from ..services.filler_word_analyzer import FillerWordAnalyzer
 from ..services.loudness_analyzer import LoudnessAnalyzer
 from ..services.wpm_analyzer import WPMAnalyzer
-from ..services.head_direction_analyzer import HeadDirectionAnalyzer
-from ..services.clarity_analyzer import ClarityAnalyzer
 from ..services.intonation_analyzer import IntonationAnalyzer
+from ..services.video_analyzer import VideoAnalyzer
 from ..services.topic_coverage_analyzer import TopicCoverageAnalyzer
 from ..services.conclusion_generator import ConclusionGenerator
 from ..utils.response_builder import ResponseBuilder
@@ -33,25 +32,11 @@ def _prosody_worker(audio_path):
     return IntonationAnalyzer().get_prosody_only(audio_path)
 
 
-def _head_direction_worker(video_path, audience_position="front"):
+def _video_analysis_worker(video_path, audience_position="front"):
     import os
-
+    from ..services.video_analyzer import VideoAnalyzer
     abs_path = os.path.abspath(video_path)
-    print(f"[{os.getpid()}] DEBUG: Video worker starting for: {abs_path}")
-    if not os.path.exists(abs_path):
-        print(f"[{os.getpid()}] ERROR: File not found at {abs_path}")
-        raise ValueError(f"File not found: {abs_path}")
-
-    print(
-        f"[{os.getpid()}] DEBUG: File exists. Size: {os.path.getsize(abs_path)} bytes"
-    )
-
-    from ..services.head_direction_analyzer import HeadDirectionAnalyzer
-
-    return HeadDirectionAnalyzer().analyze_video(
-        abs_path, audience_position=audience_position
-    )
-
+    return VideoAnalyzer().analyze_video(abs_path, audience_position=audience_position)
 
 def _loudness_worker(audio_path):
     from ..services.loudness_analyzer import LoudnessAnalyzer
@@ -72,10 +57,12 @@ class AnalysisController:
         self.filler_analyzer = FillerWordAnalyzer()
         self.loudness_analyzer = LoudnessAnalyzer()
         self.wpm_analyzer = WPMAnalyzer()
-        self.head_direction_analyzer = HeadDirectionAnalyzer()
         self.intonation_analyzer = IntonationAnalyzer()
+        self.video_analyzer = VideoAnalyzer()
+        self.topic_analyzer = TopicCoverageAnalyzer()
+        self.conclusion_generator = ConclusionGenerator()
 
-    async def create_analysis(self, file: UploadFile, user: User, db: Session):
+    async def create_analysis(self, file: UploadFile, user: User, db: Session, topic: str = None, audience_position: str = "front"):
         """
         Process uploaded file and save analysis results in a highly parallel pipeline.
         Maximizes concurrency by starting independent analyzers while waiting for transcription.
@@ -87,6 +74,15 @@ class AnalysisController:
 
         audio_path = None
         temp_dir = None
+        transcription_task = None
+        prosody_task = None
+        loudness_task = None
+        head_direction_task = None
+        facial_expression_task = None
+        wpm_task = None
+        filler_task = None
+        intonation_task = None
+        topic_task = None
 
         # Create initial analysis record in database
         analysis = Analysis(
@@ -118,12 +114,17 @@ class AnalysisController:
 
             # Get temp directory from audio path for cleanup
             temp_dir = os.path.dirname(audio_path)
+            # Reconstruct original input path (assuming process_file followed the input+ext convention)
+            file_ext = os.path.splitext(file.filename)[1]
+            input_path = os.path.join(temp_dir, f"input{file_ext}")
 
             # Step 2: Run analyzers IN PARALLEL
             t3 = datetime.now().strftime("%H:%M:%S")
             step2_start = time.perf_counter()
+            
+            loop = asyncio.get_running_loop()
 
-            async def measure_task(name, func, *args):
+            async def measure_task(name, executor, func, *args):
                 start = time.perf_counter()
                 res = await loop.run_in_executor(executor, func, *args)
                 d = time.perf_counter() - start
@@ -136,54 +137,110 @@ class AnalysisController:
                 f"[{t3}] --- Step 2: Starting parallel analyzers (WPM, Filler, Loudness, Intonation) ---"
             )
 
-            wpm_task = measure_task("WPM", self.wpm_analyzer.calculate_wpm, captions, 2)
-            filler_task = measure_task(
-                "Filler", self.filler_analyzer.identify_fillers, transcript
-            )
-            loudness_task = measure_task(
-                "Loudness", self.loudness_analyzer.analyze_loudness, audio_path, 1
-            )
-            intonation_task = measure_task(
-                "Intonation",
-                self.intonation_analyzer.analyze_intonation,
-                audio_path,
-                transcript,
-                captions,
-            )
-
-            # Head direction analysis only makes sense for video files
+            # --- PHASE 2: CONCURRENT INDEPENDENT TASKS ---
+            # We start all tasks that don't need transcription here.
+            # This includes the "Prosody" part of intonation analysis.
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] --- Phase 2: Starting simultaneous cloud & local tasks ---")
+            
+            # 1. Broadcaster to Cloud (AssemblyAI)
+            transcription_task = asyncio.create_task(asyncio.to_thread(self.file_service.transcribe_audio, audio_path))
+            
+            # 2. Local Prosody Extraction (HEAVY CPU, in separate process)
+            prosody_task = asyncio.create_task(measure_task("Prosody Extraction", _cpu_executor, _prosody_worker, audio_path))
+            
+            # 3. Local Loudness (Fast Thread)
+            loudness_task = asyncio.create_task(measure_task("Loudness", None, self.loudness_analyzer.analyze_loudness, audio_path))
+            
+            # 4. Local Video Analysis (HEAVY CPU, combined in separate process)
+            video_task = None
             if file_type == "video":
-                video_path = os.path.join(
-                    temp_dir, "input" + os.path.splitext(file.filename)[1]
-                )
-                head_direction_task = measure_task(
-                    "Head Direction",
-                    self.head_direction_analyzer.analyze_video,
-                    video_path,
-                )
-                (
-                    wpm_data,
-                    filler_analysis,
-                    loudness_analysis,
-                    intonation_analysis,
-                    head_direction_analysis,
-                ) = await asyncio.gather(
-                    wpm_task,
-                    filler_task,
-                    loudness_task,
-                    intonation_task,
-                    head_direction_task,
-                )
-            else:
-                wpm_data, filler_analysis, loudness_analysis, intonation_analysis = (
-                    await asyncio.gather(
-                        wpm_task,
-                        filler_task,
-                        loudness_task,
-                        intonation_task,
-                    )
-                )
-                head_direction_analysis = None
+                video_task = asyncio.create_task(measure_task("Video Analysis", _cpu_executor, _video_analysis_worker, input_path, audience_position))
+
+            # --- PHASE 3: DEPENDENT TASKS (REQUIRES TRANSCRIPTION) ---
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] --- Phase 3: Waiting for transcript & scoring results ---")
+            
+            # Wait for Phase 2 results that ARE needed for Step 3
+            transcript_obj = await transcription_task
+            t_transcript = datetime.now().strftime('%H:%M:%S')
+            print(f"[{t_transcript}] --- Phase 3: Transcript received from AssemblyAI ---")
+            
+            if not transcript_obj:
+                raise HTTPException(status_code=500, detail="Transcription failed")
+            
+            transcript = transcript_obj.text
+            captions = self.file_service.extract_captions(transcript_obj)
+            
+            # Wait for prosody results if not ready
+            prosody_result = await prosody_task
+            
+            # Start dependent tasks
+            wpm_task = asyncio.create_task(measure_task("WPM", None, self.wpm_analyzer.calculate_wpm, captions, 2))
+            filler_task = asyncio.create_task(measure_task("Filler", None, self.filler_analyzer.identify_fillers, transcript))
+            
+            # Intonation scoring (now it's very fast because prosody_res is passed in)
+            intonation_task = asyncio.create_task(measure_task("Intonation Scoring", None, self.intonation_analyzer.analyze_intonation, audio_path, transcript, captions, 0.5, 0.5, prosody_result))
+            
+            topic_task = None
+            if topic:
+                topic_task = asyncio.create_task(measure_task("Topic Coverage", None, self.topic_analyzer.compute_coverage, topic, transcript))
+
+            # Wait for all remaining tasks
+            dependent_tasks = [wpm_task, filler_task, intonation_task]
+            if topic_task: dependent_tasks.append(topic_task)
+            
+            # Re-gather everything with return_exceptions=True to avoid cascading file failures
+            results = await asyncio.gather(
+                loudness_task, 
+                video_task or asyncio.sleep(0), 
+                *dependent_tasks, 
+                return_exceptions=True
+            )
+            
+            # Unpack and handle exceptions
+            def check_res(r, name):
+                if isinstance(r, Exception):
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] !!! Task {name} failed: {r}")
+                    return None
+                return r
+
+            loudness_analysis = check_res(results[0], "Loudness")
+            video_analysis = check_res(results[1], "Video Analysis")
+            
+            head_direction_analysis = video_analysis["head"] if video_analysis else None
+            facial_expression_analysis = video_analysis["expression"] if video_analysis else None
+            
+            wpm_res = check_res(results[2], "WPM")
+            wpm_analysis = {
+                "intervals": wpm_res or [],
+                "conclusion": "No pacing data" if not wpm_res else None
+            }
+            
+            filler_analysis = check_res(results[3], "Filler")
+            if not filler_analysis:
+                filler_analysis = {"fillers": [], "filler_counts": {}, "total_words": 0, "filler_percentage": 0}
+
+            intonation_analysis = check_res(results[4], "Intonation")
+            if not intonation_analysis:
+                intonation_analysis = {"emphasized_words": [], "total_words": 0, "total_content_words": 0, "total_emphasized": 0, "emphasis_percentage": 0, "average_prosody_score": 0, "word_scores": [], "conclusion": "Scoring failed"}
+
+            topic_coverage = None
+            if topic_task:
+                topic_coverage = check_res(results[5], "Topic Coverage")
+
+            # --- PHASE 4: GENERATE CONCLUSIONS ---
+            # Summarize scores for humans
+            intonation_analysis["conclusion"] = self.conclusion_generator.get_intonation_conclusion(intonation_analysis)
+            wpm_analysis["conclusion"] = self.conclusion_generator.get_wpm_conclusion(wpm_analysis["intervals"])
+            loudness_analysis["conclusion"] = self.conclusion_generator.get_loudness_conclusion(loudness_analysis)
+            
+            if head_direction_analysis:
+                head_direction_analysis["conclusion"] = self.conclusion_generator.get_eye_contact_conclusion(head_direction_analysis, audience_position)
+            
+            if facial_expression_analysis:
+                facial_expression_analysis["conclusion"] = self.conclusion_generator.get_expression_conclusion(facial_expression_analysis)
+
+            if topic_coverage:
+                topic_coverage["conclusion"] = self.conclusion_generator.get_relevance_conclusion(topic_coverage)
 
             t4 = datetime.now().strftime("%H:%M:%S")
             d2 = time.perf_counter() - step2_start
@@ -197,7 +254,10 @@ class AnalysisController:
             analysis.transcript = transcript
             analysis.captions = captions
             analysis.wpm_data = wpm_analysis
+            analysis.filler_word_analysis = filler_analysis
+            analysis.loudness_analysis = loudness_analysis
             analysis.head_direction_analysis = head_direction_analysis
+            analysis.facial_expression_analysis = facial_expression_analysis
             analysis.intonation_analysis = intonation_analysis
             db.commit()
             db.refresh(analysis)
@@ -212,6 +272,7 @@ class AnalysisController:
                     "filler_word_analysis": filler_analysis,
                     "loudness_analysis": loudness_analysis,
                     "head_direction_analysis": head_direction_analysis,
+                    "facial_expression_analysis": facial_expression_analysis,
                     "intonation_analysis": intonation_analysis,
                     "created_at": analysis.created_at.isoformat(),
                 },
@@ -230,14 +291,9 @@ class AnalysisController:
             # before we delete the temp directory, otherwise workers might crash
             # trying to read from a deleted location.
             all_tasks = [
-                transcription_task,
-                prosody_task,
-                loudness_task,
-                head_direction_task,
-                wpm_task,
-                filler_task,
-                intonation_task,
-                topic_task,
+                transcription_task, prosody_task, loudness_task, 
+                head_direction_task, facial_expression_task,
+                wpm_task, filler_task, intonation_task, topic_task
             ]
             running_tasks = [t for t in all_tasks if t and not t.done()]
 
@@ -275,6 +331,7 @@ class AnalysisController:
                 "transcript": analysis.transcript,
                 "wpm_data": analysis.wpm_data,
                 "head_direction_analysis": analysis.head_direction_analysis,
+                "facial_expression_analysis": analysis.facial_expression_analysis,
                 "intonation_analysis": analysis.intonation_analysis,
                 "topic_coverage": analysis.topic_coverage,
                 "error_message": analysis.error_message,

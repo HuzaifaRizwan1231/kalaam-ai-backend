@@ -37,7 +37,13 @@ class AnalysisResponse(BaseModel):
     status: str
     transcript: Optional[str] = None
     captions: Optional[List[Dict[str, Any]]] = None
-    wpm_data: Optional[List[Dict[str, Any]]] = None
+    wpm_data: Optional[Dict[str, Any]] = None
+    filler_word_analysis: Optional[Dict[str, Any]] = None
+    loudness_analysis: Optional[Dict[str, Any]] = None
+    head_direction_analysis: Optional[Dict[str, Any]] = None
+    facial_expression_analysis: Optional[Dict[str, Any]] = None
+    intonation_analysis: Optional[Dict[str, Any]] = None
+    topic_coverage: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
     created_at: datetime
     updated_at: datetime

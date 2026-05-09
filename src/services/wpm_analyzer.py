@@ -1,46 +1,51 @@
 import pandas as pd
 from typing import List, Dict
 
-
 class WPMAnalyzer:
-    """Service for calculating Words Per Minute (WPM) from captions"""
+    """
+    Calculates Words Per Minute (WPM) from timestamp-aligned captions.
+    Uses time-binning to analyze pace changes over time, rather than 
+    just a single global average.
+    """
     
     @staticmethod
     def calculate_wpm(captions: List[Dict], interval: int = 2) -> List[Dict]:
         """
-        Calculate Words Per Minute for time intervals
+        Calculates the instantaneous pace for fixed time intervals.
+        - interval: The window size in seconds (default 2s for fine-grained resolution).
         
         Args:
-            captions: List of word-level captions with timestamps
-            interval: Time interval in seconds for WPM calculation (default: 2)
+            captions: List of word objects {text, start, end} from the transcriber.
+            interval: The sampling window for pace calculation.
             
         Returns:
-            List of WPM data for each interval
+            A list of time bins with their corresponding word count and WPM value.
         """
         if not captions:
             return []
         
-        # Create DataFrame from captions
+        # 1. Create a temporal map of words
         df = pd.DataFrame(captions)
-        df["start"] = df["start"] / 1000  # Convert milliseconds to seconds
+        df["start"] = df["start"] / 1000  # Convert AssemblyAI/Whisper ms to seconds
         df["end"] = df["end"] / 1000
         
-        # Calculate time bins
+        # 2. Define the discrete time intervals (BINS)
         max_time = df["end"].max()
         time_bins = list(range(0, int(max_time) + interval, interval))
         
-        # Bin words by start time
+        # 3. Categorize each word into an interval based on its start time
         df["time_bin"] = pd.cut(df["start"], bins=time_bins, right=False)
         
-        # Count words per bin
-        wpm_data = df.groupby("time_bin").size().reset_index(name="word_count")
+        # 4. Aggregate: Count how many words appear in each bin
+        wpm_data = df.groupby("time_bin", observed=False).size().reset_index(name="word_count")
         wpm_data["start_time"] = wpm_data["time_bin"].apply(lambda x: x.left)
         wpm_data["end_time"] = wpm_data["time_bin"].apply(lambda x: x.right)
         
-        # Calculate WPM (words per minute)
+        # 5. Scale to standard "Per Minute" metric
+        # Formula: (words in interval) * (60 / seconds in interval)
         wpm_data["wpm"] = wpm_data["word_count"] * (60 / interval)
         
-        # Format output
+        # 6. Sanitize and format for JSON output
         return [
             {
                 "start_time": float(row["start_time"]),
@@ -53,7 +58,10 @@ class WPMAnalyzer:
     
     @staticmethod
     def get_average_wpm(wpm_data: List[Dict]) -> float:
-        """Calculate average WPM from WPM data"""
+        """
+        Calculates the speaker's overall average pace across the entire session.
+        Uses total_words / total_time * 60 for higher accuracy than averaging the means.
+        """
         if not wpm_data:
             return 0.0
         
@@ -67,7 +75,10 @@ class WPMAnalyzer:
     
     @staticmethod
     def get_wpm_statistics(wpm_data: List[Dict]) -> Dict:
-        """Get statistical summary of WPM data"""
+        """
+        Provides a summarized statistical overview of the speaker's tempo.
+        Identifies bursts of speed or periods of hesitation (Min/Max).
+        """
         if not wpm_data:
             return {
                 "average_wpm": 0.0,
