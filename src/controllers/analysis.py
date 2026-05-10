@@ -208,6 +208,7 @@ class AnalysisController:
             
             head_direction_analysis = video_analysis["head"] if video_analysis else None
             facial_expression_analysis = video_analysis["expression"] if video_analysis else None
+            posture_analysis = video_analysis["posture"] if video_analysis else None
             
             wpm_res = check_res(results[2], "WPM")
             wpm_analysis = {
@@ -239,6 +240,9 @@ class AnalysisController:
             if facial_expression_analysis:
                 facial_expression_analysis["conclusion"] = self.conclusion_generator.get_expression_conclusion(facial_expression_analysis)
 
+            if posture_analysis:
+                posture_analysis["conclusion"] = self.conclusion_generator.get_posture_conclusion(posture_analysis)
+
             if topic_coverage:
                 topic_coverage["conclusion"] = self.conclusion_generator.get_relevance_conclusion(topic_coverage)
 
@@ -258,6 +262,7 @@ class AnalysisController:
             analysis.loudness_analysis = loudness_analysis
             analysis.head_direction_analysis = head_direction_analysis
             analysis.facial_expression_analysis = facial_expression_analysis
+            analysis.posture_analysis = posture_analysis
             analysis.intonation_analysis = intonation_analysis
             db.commit()
             db.refresh(analysis)
@@ -273,6 +278,7 @@ class AnalysisController:
                     "loudness_analysis": loudness_analysis,
                     "head_direction_analysis": head_direction_analysis,
                     "facial_expression_analysis": facial_expression_analysis,
+                    "posture_analysis": posture_analysis,
                     "intonation_analysis": intonation_analysis,
                     "created_at": analysis.created_at.isoformat(),
                 },
@@ -332,6 +338,7 @@ class AnalysisController:
                 "wpm_data": analysis.wpm_data,
                 "head_direction_analysis": analysis.head_direction_analysis,
                 "facial_expression_analysis": analysis.facial_expression_analysis,
+                "posture_analysis": analysis.posture_analysis,
                 "intonation_analysis": analysis.intonation_analysis,
                 "topic_coverage": analysis.topic_coverage,
                 "error_message": analysis.error_message,
