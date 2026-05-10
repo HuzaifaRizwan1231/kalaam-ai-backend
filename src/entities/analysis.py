@@ -21,6 +21,7 @@ class Analysis(Base):
     loudness_analysis = Column(JSON, nullable=True)  # JSON object of loudness analysis
     head_direction_analysis = Column(JSON, nullable=True)  # JSON object of head direction analysis
     facial_expression_analysis = Column(JSON, nullable=True)  # JSON object of facial expression analysis
+    posture_analysis = Column(JSON, nullable=True)  # JSON object of posture analysis
     intonation_analysis = Column(JSON, nullable=True)  # JSON object of intonation/emphasis analysis
     topic_coverage = Column(JSON, nullable=True)  # JSON object of topic/semantic coverage analysis
     error_message = Column(Text, nullable=True)
