@@ -15,6 +15,7 @@ from ..services.wpm_analyzer import WPMAnalyzer
 from ..services.intonation_analyzer import IntonationAnalyzer
 from ..services.video_analyzer import VideoAnalyzer
 from ..services.topic_coverage_analyzer import TopicCoverageAnalyzer
+from ..services.gesture_analyzer import GestureAnalyzer
 from ..services.conclusion_generator import ConclusionGenerator
 from ..utils.response_builder import ResponseBuilder
 from concurrent.futures import ProcessPoolExecutor
@@ -44,6 +45,12 @@ def _loudness_worker(audio_path):
     return LoudnessAnalyzer().analyze_loudness(audio_path)
 
 
+def _gesture_worker(video_path):
+    from ..services.gesture_analyzer import GestureAnalyzer
+
+    return GestureAnalyzer().analyze_gestures(video_path)
+
+
 class AnalysisController:
     """Controller for handling file analysis operations"""
 
@@ -59,6 +66,7 @@ class AnalysisController:
         self.wpm_analyzer = WPMAnalyzer()
         self.intonation_analyzer = IntonationAnalyzer()
         self.video_analyzer = VideoAnalyzer()
+        self.gesture_analyzer = GestureAnalyzer()
         self.topic_analyzer = TopicCoverageAnalyzer()
         self.conclusion_generator = ConclusionGenerator()
 
@@ -83,6 +91,7 @@ class AnalysisController:
         filler_task = None
         intonation_task = None
         topic_task = None
+        gesture_task = None
 
         # Create initial analysis record in database
         analysis = Analysis(
@@ -155,6 +164,7 @@ class AnalysisController:
             video_task = None
             if file_type == "video":
                 video_task = asyncio.create_task(measure_task("Video Analysis", _cpu_executor, _video_analysis_worker, input_path, audience_position))
+                gesture_task = asyncio.create_task(measure_task("Gesture Analysis", _cpu_executor, _gesture_worker, input_path))
 
             # --- PHASE 3: DEPENDENT TASKS (REQUIRES TRANSCRIPTION) ---
             print(f"[{datetime.now().strftime('%H:%M:%S')}] --- Phase 3: Waiting for transcript & scoring results ---")
@@ -187,6 +197,7 @@ class AnalysisController:
             # Wait for all remaining tasks
             dependent_tasks = [wpm_task, filler_task, intonation_task]
             if topic_task: dependent_tasks.append(topic_task)
+            if gesture_task: dependent_tasks.append(gesture_task)
             
             # Re-gather everything with return_exceptions=True to avoid cascading file failures
             results = await asyncio.gather(
@@ -208,6 +219,7 @@ class AnalysisController:
             
             head_direction_analysis = video_analysis["head"] if video_analysis else None
             facial_expression_analysis = video_analysis["expression"] if video_analysis else None
+            posture_analysis = video_analysis["posture"] if video_analysis else None
             
             wpm_res = check_res(results[2], "WPM")
             wpm_analysis = {
@@ -227,6 +239,10 @@ class AnalysisController:
             if topic_task:
                 topic_coverage = check_res(results[5], "Topic Coverage")
 
+            gesture_analysis = None
+            if gesture_task:
+                gesture_analysis = check_res(results[6] if topic_task else results[5], "Gesture Analysis")
+
             # --- PHASE 4: GENERATE CONCLUSIONS ---
             # Summarize scores for humans
             intonation_analysis["conclusion"] = self.conclusion_generator.get_intonation_conclusion(intonation_analysis)
@@ -241,6 +257,9 @@ class AnalysisController:
 
             if topic_coverage:
                 topic_coverage["conclusion"] = self.conclusion_generator.get_relevance_conclusion(topic_coverage)
+
+            if posture_analysis:
+                posture_analysis["conclusion"] = self.conclusion_generator.get_posture_conclusion(posture_analysis)
 
             t4 = datetime.now().strftime("%H:%M:%S")
             d2 = time.perf_counter() - step2_start
@@ -258,6 +277,8 @@ class AnalysisController:
             analysis.loudness_analysis = loudness_analysis
             analysis.head_direction_analysis = head_direction_analysis
             analysis.facial_expression_analysis = facial_expression_analysis
+            analysis.posture_analysis = posture_analysis
+            analysis.gesture_analysis = gesture_analysis
             analysis.intonation_analysis = intonation_analysis
             analysis.topic_coverage = topic_coverage
             db.commit()
@@ -274,6 +295,8 @@ class AnalysisController:
                     "loudness_analysis": loudness_analysis,
                     "head_direction_analysis": head_direction_analysis,
                     "facial_expression_analysis": facial_expression_analysis,
+                    "posture_analysis": posture_analysis,
+                    "gesture_analysis": gesture_analysis,
                     "intonation_analysis": intonation_analysis,
                     "topic_coverage": topic_coverage,
                     "created_at": analysis.created_at.isoformat(),
@@ -295,7 +318,7 @@ class AnalysisController:
             all_tasks = [
                 transcription_task, prosody_task, loudness_task, 
                 head_direction_task, facial_expression_task,
-                wpm_task, filler_task, intonation_task, topic_task
+                wpm_task, filler_task, intonation_task, topic_task, gesture_task
             ]
             running_tasks = [t for t in all_tasks if t and not t.done()]
 
@@ -336,6 +359,8 @@ class AnalysisController:
                 "facial_expression_analysis": analysis.facial_expression_analysis,
                 "filler_word_analysis": analysis.filler_word_analysis,
                 "loudness_analysis": analysis.loudness_analysis,
+                "posture_analysis": analysis.posture_analysis,
+                "gesture_analysis": analysis.gesture_analysis,
                 "intonation_analysis": analysis.intonation_analysis,
                 "topic_coverage": analysis.topic_coverage,
                 "error_message": analysis.error_message,
