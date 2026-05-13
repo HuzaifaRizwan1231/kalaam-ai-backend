@@ -259,6 +259,7 @@ class AnalysisController:
             analysis.head_direction_analysis = head_direction_analysis
             analysis.facial_expression_analysis = facial_expression_analysis
             analysis.intonation_analysis = intonation_analysis
+            analysis.topic_coverage = topic_coverage
             db.commit()
             db.refresh(analysis)
 
@@ -274,6 +275,7 @@ class AnalysisController:
                     "head_direction_analysis": head_direction_analysis,
                     "facial_expression_analysis": facial_expression_analysis,
                     "intonation_analysis": intonation_analysis,
+                    "topic_coverage": topic_coverage,
                     "created_at": analysis.created_at.isoformat(),
                 },
                 message="Analysis completed and saved successfully",
@@ -332,6 +334,8 @@ class AnalysisController:
                 "wpm_data": analysis.wpm_data,
                 "head_direction_analysis": analysis.head_direction_analysis,
                 "facial_expression_analysis": analysis.facial_expression_analysis,
+                "filler_word_analysis": analysis.filler_word_analysis,
+                "loudness_analysis": analysis.loudness_analysis,
                 "intonation_analysis": analysis.intonation_analysis,
                 "topic_coverage": analysis.topic_coverage,
                 "error_message": analysis.error_message,
