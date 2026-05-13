@@ -1,6 +1,7 @@
 import cv2
 import mediapipe as mp
 import math
+from datetime import datetime
 from collections import defaultdict
 from typing import Dict, List
 
@@ -99,25 +100,25 @@ class GestureAnalyzer:
 
         return left_cross < 0.15 and right_cross < 0.15
 
-    def analyze_gestures(self, video_path: str) -> Dict:
-
+    def analyze_gestures(self, video_path: str, sample_every_n_frames: int = 30) -> Dict:
         if not video_path:
             raise ValueError("Video path is required")
 
         cap = cv2.VideoCapture(video_path)
-
         if not cap.isOpened():
             raise Exception("Could not open video")
 
         gesture_counts = defaultdict(int)
-
-        total_frames = 0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         gesture_frames = 0
+        frame_index = 0
+        processed_frames = 0
 
         previous_left_wrist = None
         previous_right_wrist = None
-
         total_motion = 0
+
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] [Gestures] Starting analysis of {total_frames} frames (every {sample_every_n_frames})")
 
         with self.mp_pose.Pose(
             min_detection_confidence=0.5, min_tracking_confidence=0.5
@@ -125,14 +126,14 @@ class GestureAnalyzer:
             min_detection_confidence=0.5, min_tracking_confidence=0.5, max_num_hands=2
         ) as hands:
 
-            while cap.isOpened():
-
+            while frame_index < total_frames:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
                 ret, frame = cap.read()
-
                 if not ret:
                     break
 
-                total_frames += 1
+                if frame_index % 100 == 0:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] [Gestures] Processing frame {frame_index}/{total_frames}...")
 
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
@@ -187,10 +188,11 @@ class GestureAnalyzer:
                         total_motion += left_motion + right_motion
 
                     previous_left_wrist = left_wrist
-                    previous_right_wrist = right_wrist
-
                 if frame_has_gesture:
                     gesture_frames += 1
+                
+                processed_frames += 1
+                frame_index += sample_every_n_frames
 
         cap.release()
 
@@ -198,9 +200,9 @@ class GestureAnalyzer:
         # FINAL ANALYSIS
         # -----------------------------
 
-        gesture_usage_ratio = gesture_frames / total_frames if total_frames > 0 else 0
+        gesture_usage_ratio = gesture_frames / processed_frames if processed_frames > 0 else 0
 
-        average_motion = total_motion / total_frames if total_frames > 0 else 0
+        average_motion = total_motion / processed_frames if processed_frames > 0 else 0
 
         feedback: List[str] = []
 
