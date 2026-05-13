@@ -17,6 +17,7 @@ from ..services.video_analyzer import VideoAnalyzer
 from ..services.topic_coverage_analyzer import TopicCoverageAnalyzer
 from ..services.gesture_analyzer import GestureAnalyzer
 from ..services.conclusion_generator import ConclusionGenerator
+from ..services.clarity_analyzer import ClarityAnalyzer
 from ..utils.response_builder import ResponseBuilder
 from concurrent.futures import ProcessPoolExecutor
 import functools
@@ -36,8 +37,10 @@ def _prosody_worker(audio_path):
 def _video_analysis_worker(video_path, audience_position="front"):
     import os
     from ..services.video_analyzer import VideoAnalyzer
+
     abs_path = os.path.abspath(video_path)
     return VideoAnalyzer().analyze_video(abs_path, audience_position=audience_position)
+
 
 def _loudness_worker(audio_path):
     from ..services.loudness_analyzer import LoudnessAnalyzer
@@ -69,8 +72,16 @@ class AnalysisController:
         self.gesture_analyzer = GestureAnalyzer()
         self.topic_analyzer = TopicCoverageAnalyzer()
         self.conclusion_generator = ConclusionGenerator()
+        self.clarity_analyzer = ClarityAnalyzer()
 
-    async def create_analysis(self, file: UploadFile, user: User, db: Session, topic: str = None, audience_position: str = "front"):
+    async def create_analysis(
+        self,
+        file: UploadFile,
+        user: User,
+        db: Session,
+        topic: str = None,
+        audience_position: str = "front",
+    ):
         """
         Process uploaded file and save analysis results in a highly parallel pipeline.
         Maximizes concurrency by starting independent analyzers while waiting for transcription.
@@ -130,7 +141,7 @@ class AnalysisController:
             # Step 2: Run analyzers IN PARALLEL
             t3 = datetime.now().strftime("%H:%M:%S")
             step2_start = time.perf_counter()
-            
+
             loop = asyncio.get_running_loop()
 
             async def measure_task(name, executor, func, *args):
@@ -149,91 +160,181 @@ class AnalysisController:
             # --- PHASE 2: CONCURRENT INDEPENDENT TASKS ---
             # We start all tasks that don't need transcription here.
             # This includes the "Prosody" part of intonation analysis.
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] --- Phase 2: Starting simultaneous cloud & local tasks ---")
-            
+            print(
+                f"[{datetime.now().strftime('%H:%M:%S')}] --- Phase 2: Starting simultaneous cloud & local tasks ---"
+            )
+
             # 1. Broadcaster to Cloud (AssemblyAI)
-            transcription_task = asyncio.create_task(asyncio.to_thread(self.file_service.transcribe_audio, audio_path))
-            
+            transcription_task = asyncio.create_task(
+                asyncio.to_thread(self.file_service.transcribe_audio, audio_path)
+            )
+
             # 2. Local Prosody Extraction (HEAVY CPU, in separate process)
-            prosody_task = asyncio.create_task(measure_task("Prosody Extraction", _cpu_executor, _prosody_worker, audio_path))
-            
+            prosody_task = asyncio.create_task(
+                measure_task(
+                    "Prosody Extraction", _cpu_executor, _prosody_worker, audio_path
+                )
+            )
+
             # 3. Local Loudness (Fast Thread)
-            loudness_task = asyncio.create_task(measure_task("Loudness", None, self.loudness_analyzer.analyze_loudness, audio_path))
-            
+            loudness_task = asyncio.create_task(
+                measure_task(
+                    "Loudness",
+                    None,
+                    self.loudness_analyzer.analyze_loudness,
+                    audio_path,
+                )
+            )
+
             # 4. Local Video Analysis (HEAVY CPU, combined in separate process)
             video_task = None
             if file_type == "video":
-                video_task = asyncio.create_task(measure_task("Video Analysis", _cpu_executor, _video_analysis_worker, input_path, audience_position))
-                gesture_task = asyncio.create_task(measure_task("Gesture Analysis", _cpu_executor, _gesture_worker, input_path))
+                video_task = asyncio.create_task(
+                    measure_task(
+                        "Video Analysis",
+                        _cpu_executor,
+                        _video_analysis_worker,
+                        input_path,
+                        audience_position,
+                    )
+                )
+                gesture_task = asyncio.create_task(
+                    measure_task(
+                        "Gesture Analysis", _cpu_executor, _gesture_worker, input_path
+                    )
+                )
 
             # --- PHASE 3: DEPENDENT TASKS (REQUIRES TRANSCRIPTION) ---
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] --- Phase 3: Waiting for transcript & scoring results ---")
-            
+            print(
+                f"[{datetime.now().strftime('%H:%M:%S')}] --- Phase 3: Waiting for transcript & scoring results ---"
+            )
+
             # Wait for Phase 2 results that ARE needed for Step 3
             transcript_obj = await transcription_task
-            t_transcript = datetime.now().strftime('%H:%M:%S')
-            print(f"[{t_transcript}] --- Phase 3: Transcript received from AssemblyAI ---")
-            
+            t_transcript = datetime.now().strftime("%H:%M:%S")
+            print(
+                f"[{t_transcript}] --- Phase 3: Transcript received from AssemblyAI ---"
+            )
+
             if not transcript_obj:
                 raise HTTPException(status_code=500, detail="Transcription failed")
-            
+
             transcript = transcript_obj.text
             captions = self.file_service.extract_captions(transcript_obj)
-            
+
             # Wait for prosody results if not ready
             prosody_result = await prosody_task
-            
+
             # Start dependent tasks
-            wpm_task = asyncio.create_task(measure_task("WPM", None, self.wpm_analyzer.calculate_wpm, captions, 2))
-            filler_task = asyncio.create_task(measure_task("Filler", None, self.filler_analyzer.identify_fillers, transcript))
-            
+            wpm_task = asyncio.create_task(
+                measure_task("WPM", None, self.wpm_analyzer.calculate_wpm, captions, 2)
+            )
+            filler_task = asyncio.create_task(
+                measure_task(
+                    "Filler", None, self.filler_analyzer.identify_fillers, transcript
+                )
+            )
+
             # Intonation scoring (now it's very fast because prosody_res is passed in)
-            intonation_task = asyncio.create_task(measure_task("Intonation Scoring", None, self.intonation_analyzer.analyze_intonation, audio_path, transcript, captions, 0.5, 0.5, prosody_result))
-            
+            intonation_task = asyncio.create_task(
+                measure_task(
+                    "Intonation Scoring",
+                    None,
+                    self.intonation_analyzer.analyze_intonation,
+                    audio_path,
+                    transcript,
+                    captions,
+                    0.5,
+                    0.5,
+                    prosody_result,
+                )
+            )
+
+            # Add clarity analysis task
+            clarity_task = asyncio.create_task(
+                measure_task(
+                    "Clarity Analysis",
+                    None,
+                    self.clarity_analyzer.analyze_clarity,
+                    audio_path,
+                )
+            )
+
             topic_task = None
             if topic:
-                topic_task = asyncio.create_task(measure_task("Topic Coverage", None, self.topic_analyzer.compute_coverage, topic, transcript))
+                topic_task = asyncio.create_task(
+                    measure_task(
+                        "Topic Coverage",
+                        None,
+                        self.topic_analyzer.compute_coverage,
+                        topic,
+                        transcript,
+                    )
+                )
 
             # Wait for all remaining tasks
             dependent_tasks = [wpm_task, filler_task, intonation_task]
-            if topic_task: dependent_tasks.append(topic_task)
-            if gesture_task: dependent_tasks.append(gesture_task)
-            
+            if topic_task:
+                dependent_tasks.append(topic_task)
+            if gesture_task:
+                dependent_tasks.append(gesture_task)
+
             # Re-gather everything with return_exceptions=True to avoid cascading file failures
             results = await asyncio.gather(
-                loudness_task, 
-                video_task or asyncio.sleep(0), 
-                *dependent_tasks, 
-                return_exceptions=True
+                loudness_task,
+                video_task or asyncio.sleep(0),
+                *dependent_tasks,
+                clarity_task,
+                return_exceptions=True,
             )
-            
+
             # Unpack and handle exceptions
             def check_res(r, name):
                 if isinstance(r, Exception):
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] !!! Task {name} failed: {r}")
+                    print(
+                        f"[{datetime.now().strftime('%H:%M:%S')}] !!! Task {name} failed: {r}"
+                    )
                     return None
                 return r
 
             loudness_analysis = check_res(results[0], "Loudness")
             video_analysis = check_res(results[1], "Video Analysis")
-            
+
             head_direction_analysis = video_analysis["head"] if video_analysis else None
-            facial_expression_analysis = video_analysis["expression"] if video_analysis else None
+            facial_expression_analysis = (
+                video_analysis["expression"] if video_analysis else None
+            )
             posture_analysis = video_analysis["posture"] if video_analysis else None
-            
+
             wpm_res = check_res(results[2], "WPM")
             wpm_analysis = {
                 "intervals": wpm_res or [],
-                "conclusion": "No pacing data" if not wpm_res else None
+                "conclusion": "No pacing data" if not wpm_res else None,
             }
-            
+
             filler_analysis = check_res(results[3], "Filler")
             if not filler_analysis:
-                filler_analysis = {"fillers": [], "filler_counts": {}, "total_words": 0, "filler_percentage": 0}
+                filler_analysis = {
+                    "fillers": [],
+                    "filler_counts": {},
+                    "total_words": 0,
+                    "filler_percentage": 0,
+                }
 
             intonation_analysis = check_res(results[4], "Intonation")
             if not intonation_analysis:
-                intonation_analysis = {"emphasized_words": [], "total_words": 0, "total_content_words": 0, "total_emphasized": 0, "emphasis_percentage": 0, "average_prosody_score": 0, "word_scores": [], "conclusion": "Scoring failed"}
+                intonation_analysis = {
+                    "emphasized_words": [],
+                    "total_words": 0,
+                    "total_content_words": 0,
+                    "total_emphasized": 0,
+                    "emphasis_percentage": 0,
+                    "average_prosody_score": 0,
+                    "word_scores": [],
+                    "conclusion": "Scoring failed",
+                }
+
+            clarity_analysis = check_res(results[-1], "Clarity Analysis")
 
             topic_coverage = None
             if topic_task:
@@ -241,25 +342,45 @@ class AnalysisController:
 
             gesture_analysis = None
             if gesture_task:
-                gesture_analysis = check_res(results[6] if topic_task else results[5], "Gesture Analysis")
+                gesture_analysis = check_res(
+                    results[6] if topic_task else results[5], "Gesture Analysis"
+                )
 
             # --- PHASE 4: GENERATE CONCLUSIONS ---
             # Summarize scores for humans
-            intonation_analysis["conclusion"] = self.conclusion_generator.get_intonation_conclusion(intonation_analysis)
-            wpm_analysis["conclusion"] = self.conclusion_generator.get_wpm_conclusion(wpm_analysis["intervals"])
-            loudness_analysis["conclusion"] = self.conclusion_generator.get_loudness_conclusion(loudness_analysis)
-            
+            intonation_analysis["conclusion"] = (
+                self.conclusion_generator.get_intonation_conclusion(intonation_analysis)
+            )
+            wpm_analysis["conclusion"] = self.conclusion_generator.get_wpm_conclusion(
+                wpm_analysis["intervals"]
+            )
+            loudness_analysis["conclusion"] = (
+                self.conclusion_generator.get_loudness_conclusion(loudness_analysis)
+            )
+
             if head_direction_analysis:
-                head_direction_analysis["conclusion"] = self.conclusion_generator.get_eye_contact_conclusion(head_direction_analysis, audience_position)
-            
+                head_direction_analysis["conclusion"] = (
+                    self.conclusion_generator.get_eye_contact_conclusion(
+                        head_direction_analysis, audience_position
+                    )
+                )
+
             if facial_expression_analysis:
-                facial_expression_analysis["conclusion"] = self.conclusion_generator.get_expression_conclusion(facial_expression_analysis)
+                facial_expression_analysis["conclusion"] = (
+                    self.conclusion_generator.get_expression_conclusion(
+                        facial_expression_analysis
+                    )
+                )
 
             if topic_coverage:
-                topic_coverage["conclusion"] = self.conclusion_generator.get_relevance_conclusion(topic_coverage)
+                topic_coverage["conclusion"] = (
+                    self.conclusion_generator.get_relevance_conclusion(topic_coverage)
+                )
 
             if posture_analysis:
-                posture_analysis["conclusion"] = self.conclusion_generator.get_posture_conclusion(posture_analysis)
+                posture_analysis["conclusion"] = (
+                    self.conclusion_generator.get_posture_conclusion(posture_analysis)
+                )
 
             t4 = datetime.now().strftime("%H:%M:%S")
             d2 = time.perf_counter() - step2_start
@@ -281,6 +402,7 @@ class AnalysisController:
             analysis.gesture_analysis = gesture_analysis
             analysis.intonation_analysis = intonation_analysis
             analysis.topic_coverage = topic_coverage
+            analysis.clarity_analysis = clarity_analysis
             db.commit()
             db.refresh(analysis)
 
@@ -293,6 +415,9 @@ class AnalysisController:
                     "wpm_data": wpm_analysis,
                     "filler_word_analysis": filler_analysis,
                     "loudness_analysis": loudness_analysis,
+                    "clarity_analysis": (
+                        clarity_analysis["clarity_score"] if clarity_analysis else None
+                    ),
                     "head_direction_analysis": head_direction_analysis,
                     "facial_expression_analysis": facial_expression_analysis,
                     "posture_analysis": posture_analysis,
@@ -316,9 +441,16 @@ class AnalysisController:
             # before we delete the temp directory, otherwise workers might crash
             # trying to read from a deleted location.
             all_tasks = [
-                transcription_task, prosody_task, loudness_task, 
-                head_direction_task, facial_expression_task,
-                wpm_task, filler_task, intonation_task, topic_task, gesture_task
+                transcription_task,
+                prosody_task,
+                loudness_task,
+                head_direction_task,
+                facial_expression_task,
+                wpm_task,
+                filler_task,
+                intonation_task,
+                topic_task,
+                gesture_task,
             ]
             running_tasks = [t for t in all_tasks if t and not t.done()]
 
