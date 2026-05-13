@@ -103,16 +103,70 @@ class ConclusionGenerator:
     @staticmethod
     def get_loudness_conclusion(loud_data: Dict) -> str:
         """
-        Analyzes audio volume levels using Integrated Loudness (LUFS).
-        -23 LUFS is standard for broadcast; -18 is typical for online media.
+        Analyzes audio volume levels using Integrated Loudness (LUFS) and RMS peaks.
+        Provides feedback on volume levels, consistency, and technical quality.
         """
-        lufs = loud_data.get("integrated_loudness", -20)
-        if lufs < -25:
-            return "Your volume is quite low. Ensure your microphone is positioned correctly and try to speak from your diaphragm."
-        elif lufs > -12:
-            return "You are speaking quite loudly (borderline shouting). Try to pull back slightly to avoid overwhelming the listener."
-        else:
-            return "Your volume is consistent and at a comfortable level for most listeners."
+        if not loud_data or "statistics" not in loud_data:
+            return "No loudness data available for analysis."
+
+        stats = loud_data["statistics"]
+        lufs = stats.get("average_lufs", -20)
+        lufs_max = stats.get("peak_lufs", -20)
+        lufs_min = stats.get("min_lufs", -20)
+        lufs_range = lufs_max - lufs_min
+        rms_max = stats.get("peak_rms_db", -96.0)
+
+        # 1. Technical Warning (Clipping)
+        if rms_max > -1.0:
+            return (
+                "Your audio is frequently clipping and distorting. This happens when you "
+                "are too close to the microphone or your input volume is set too high. "
+                "Try backing away slightly to maintain clarity."
+            )
+
+        # 2. Volume Level Analysis
+        if lufs < -30:
+            return (
+                "Your volume is extremely low and difficult to hear. Ensure your microphone "
+                "is positioned correctly and focus on projecting your voice more clearly "
+                "to ensure your message isn't lost."
+            )
+        
+        if lufs > -10:
+            return (
+                "You are speaking at a very high volume, which can come across as aggressive "
+                "or overwhelming. Try to lower your vocal intensity to create a more "
+                "inviting and professional atmosphere."
+            )
+
+        # 3. Dynamic Range Analysis (Consistency)
+        if lufs_range > 16:
+            return (
+                "Your volume is quite inconsistent. You tend to fluctuate significantly between "
+                "very quiet and very loud moments. Try to maintain a steadier volume "
+                "to keep your audience comfortable."
+            )
+        
+        if lufs_range < 5:
+            return (
+                "Your volume is very steady, but lacks dynamic emphasis. Try to 'punch' important "
+                "words by speaking them slightly louder to help your audience identify "
+                "your key points."
+            )
+
+        # 4. Subtle Level Adjustments
+        if lufs < -24:
+            return (
+                "You are a bit on the quiet side. While you are audible, speaking with "
+                "more breath support will make you sound more authoritative and easier to follow."
+            )
+
+        # 5. Perfect Case
+        return (
+            "Great job! Your volume is consistent and sits at a perfect level for digital "
+            "presentations. You are using a healthy range of volume to keep the delivery "
+            "engaging."
+        )
 
     @staticmethod
     def get_relevance_conclusion(topic_data: Dict) -> str:
@@ -121,7 +175,7 @@ class ConclusionGenerator:
         Uses Sentence-Transformers to compute semantic similarity.
         """
         if not topic_data: return "No topic analysis available."
-        score = topic_data.get("overall_coverage", 0)
+        score = topic_data.get("mean_similarity", 0)
         
         if score > 0.7:
             return "You stayed perfectly on topic! Your speech correlates strongly with your intended subject matter."

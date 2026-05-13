@@ -81,13 +81,13 @@ class LoudnessAnalyzer:
         valid_lufs = [r["lufs"] for r in results if r["lufs"] > -70.0]
         
         stats = {
-            "average_rms_db": float(np.mean(valid_rms)) if valid_rms else -96.0,
-            "average_lufs": float(np.mean(valid_lufs)) if valid_lufs else -70.0,
-            "min_rms_db": float(np.min(valid_rms)) if valid_rms else -96.0,
-            "max_rms_db": float(np.max(valid_rms)) if valid_rms else -96.0,
-            "min_lufs": float(np.min(valid_lufs)) if valid_lufs else -70.0,
-            "max_lufs": float(np.max(valid_lufs)) if valid_lufs else -70.0,
-            "total_duration": float(duration)
+            "average_rms_db": round(float(np.mean(valid_rms)), 2) if valid_rms else -96.0,
+            "average_lufs": round(float(np.mean(valid_lufs)), 2) if valid_lufs else -70.0,
+            "min_rms_db": round(float(np.min(valid_rms)), 2) if valid_rms else -96.0,
+            "peak_rms_db": round(float(np.max(valid_rms)), 2) if valid_rms else -96.0,
+            "min_lufs": round(float(np.min(valid_lufs)), 2) if valid_lufs else -70.0,
+            "peak_lufs": round(float(np.max(valid_lufs)), 2) if valid_lufs else -70.0,
+            "total_duration": round(float(duration), 2)
         }
         
         return {
