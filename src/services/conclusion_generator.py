@@ -212,3 +212,31 @@ class ConclusionGenerator:
             return "You were very focused on speaking. Don't forget to use facial expressions to emphasize your key points and connect emotionally."
         else:
             return "Your facial expressions were calm and composed throughout the presentation."
+
+    @staticmethod
+    def get_posture_conclusion(posture_data: Dict) -> str:
+        """
+        Interprets body posture data.
+        Provides feedback on confidence, openness, and physical presence.
+        """
+        if not posture_data or not posture_data.get("posture_breakdown"):
+            return "No posture data detected. Ensure your full body is visible to the camera."
+        
+        breakdown = posture_data.get("posture_breakdown", {})
+        confident = breakdown.get("Confident", 0)
+        slouching = breakdown.get("Slouching", 0)
+        leaning = breakdown.get("Leaning", 0)
+        closed = breakdown.get("Closed", 0)
+        
+        if confident > 70:
+            return "Excellent posture! You maintained a confident, upright stance throughout your presentation. This projects authority and credibility."
+        elif confident > 50:
+            return f"Good posture overall ({confident:.0f}% confident). You projected a generally confident presence, though you occasionally slouched or shifted your weight. Try to maintain a stable stance."
+        elif slouching > 30:
+            return "You slouched frequently during your presentation. Standing tall with shoulders back will project more confidence and engage your audience better."
+        elif closed > 20:
+            return "Your arms were crossed or held close to your body. This can appear defensive or closed off. Try opening your arms and using gestures to appear more approachable and confident."
+        elif leaning > 30:
+            return "You shifted your weight and leaned frequently. Try to maintain balance and plant your feet firmly to appear more grounded and authoritative."
+        else:
+            return "Your posture was generally neutral. Try to maintain a more confident, upright stance to maximize your presence."
