@@ -22,6 +22,9 @@ class Analysis(Base):
     )  # JSON object of filler word analysis
     loudness_analysis = Column(JSON, nullable=True)  # JSON object of loudness analysis
     clarity_analysis = Column(JSON, nullable=True)  # JSON object of clarity analysis
+    llm_judge_feedback = Column(
+        JSON, nullable=True
+    )  # JSON object of LLM judge feedback
     head_direction_analysis = Column(
         JSON, nullable=True
     )  # JSON object of head direction analysis

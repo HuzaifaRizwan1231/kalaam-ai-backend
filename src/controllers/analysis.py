@@ -1,4 +1,4 @@
-import os
+import os, json
 import asyncio
 import tempfile
 import shutil
@@ -22,6 +22,7 @@ from ..utils.response_builder import ResponseBuilder
 from concurrent.futures import ProcessPoolExecutor
 from ..utils.LLM_judge import prepare_gemini_input
 from ..services.gemini_feedback import GeminiFeedbackService
+from ..services.gemini_feedback import FinalFeedback
 import functools
 
 # Global ProcessPoolExecutor for CPU-heavy tasks (Intonation, Video Analysis)
@@ -384,24 +385,24 @@ class AnalysisController:
             print(f"[{t4}] !!! Total Processing Time: {total_time:.2f}s !!!")
 
             data = {
-                    "analysis_id": analysis.id,
-                    "file_name": file.filename,
-                    "file_type": file_type,
-                    "transcript": transcript,
-                    "wpm_data": wpm_analysis,
-                    "filler_word_analysis": filler_analysis,
-                    "loudness_analysis": loudness_analysis,
-                    "clarity_analysis": (
-                        clarity_analysis["clarity_score"] if clarity_analysis else None
-                    ),
-                    "head_direction_analysis": head_direction_analysis,
-                    "facial_expression_analysis": facial_expression_analysis,
-                    "posture_analysis": posture_analysis,
-                    "gesture_analysis": gesture_analysis,
-                    "intonation_analysis": intonation_analysis,
-                    "topic_coverage": topic_coverage,
-                    "created_at": analysis.created_at.isoformat(),
-                }
+                "analysis_id": analysis.id,
+                "file_name": file.filename,
+                "file_type": file_type,
+                "transcript": transcript,
+                "wpm_data": wpm_analysis,
+                "filler_word_analysis": filler_analysis,
+                "loudness_analysis": loudness_analysis,
+                "clarity_analysis": (
+                    clarity_analysis["clarity_score"] if clarity_analysis else None
+                ),
+                "head_direction_analysis": head_direction_analysis,
+                "facial_expression_analysis": facial_expression_analysis,
+                "posture_analysis": posture_analysis,
+                "gesture_analysis": gesture_analysis,
+                "intonation_analysis": intonation_analysis,
+                "topic_coverage": topic_coverage,
+                "created_at": analysis.created_at.isoformat(),
+            }
 
             # This is where we are invoking the gemini LLM judge to get the final feedback
             service = GeminiFeedbackService(api_key=os.getenv("GEMINI_API_KEY"))
@@ -425,6 +426,7 @@ class AnalysisController:
             analysis.intonation_analysis = intonation_analysis
             analysis.topic_coverage = topic_coverage
             analysis.clarity_analysis = clarity_analysis
+            analysis.llm_judge_feedback = final_feedback.model_dump_json()
             db.commit()
             db.refresh(analysis)
 
@@ -437,7 +439,7 @@ class AnalysisController:
             # Update analysis status to failed
             analysis.status = "failed"
             analysis.error_message = str(e)
-            db.commit()
+            db.rollback()
 
             return ResponseBuilder.error(f"Analysis failed: {str(e)}", 500)
         finally:
@@ -497,7 +499,15 @@ class AnalysisController:
                 "loudness_analysis": analysis.loudness_analysis,
                 "posture_analysis": analysis.posture_analysis,
                 "gesture_analysis": analysis.gesture_analysis,
+                "clarity_analysis": (
+                    analysis.clarity_analysis["clarity_score"]
+                    if analysis.clarity_analysis
+                    else None
+                ),
                 "intonation_analysis": analysis.intonation_analysis,
+                "llm_judge_feedback": FinalFeedback.model_validate_json(
+                    analysis.llm_judge_feedback
+                ),
                 "topic_coverage": analysis.topic_coverage,
                 "error_message": analysis.error_message,
                 "created_at": analysis.created_at.isoformat(),
