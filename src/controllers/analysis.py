@@ -20,6 +20,8 @@ from ..services.conclusion_generator import ConclusionGenerator
 from ..services.clarity_analyzer import ClarityAnalyzer
 from ..utils.response_builder import ResponseBuilder
 from concurrent.futures import ProcessPoolExecutor
+from ..utils.LLM_judge import prepare_gemini_input
+from ..services.gemini_feedback import GeminiFeedbackService
 import functools
 
 # Global ProcessPoolExecutor for CPU-heavy tasks (Intonation, Video Analysis)
@@ -29,28 +31,21 @@ _cpu_executor = ProcessPoolExecutor(max_workers=min(os.cpu_count(), 4))
 
 def _prosody_worker(audio_path):
     """Heavy feature extraction for intonation"""
-    from ..services.intonation_analyzer import IntonationAnalyzer
 
     return IntonationAnalyzer().get_prosody_only(audio_path)
 
 
 def _video_analysis_worker(video_path, audience_position="front"):
-    import os
-    from ..services.video_analyzer import VideoAnalyzer
 
     abs_path = os.path.abspath(video_path)
     return VideoAnalyzer().analyze_video(abs_path, audience_position=audience_position)
 
 
 def _loudness_worker(audio_path):
-    from ..services.loudness_analyzer import LoudnessAnalyzer
-
     return LoudnessAnalyzer().analyze_loudness(audio_path)
 
 
 def _gesture_worker(video_path):
-    from ..services.gesture_analyzer import GestureAnalyzer
-
     return GestureAnalyzer().analyze_gestures(video_path)
 
 
@@ -388,6 +383,33 @@ class AnalysisController:
             total_time = time.perf_counter() - start_total
             print(f"[{t4}] !!! Total Processing Time: {total_time:.2f}s !!!")
 
+            data = {
+                    "analysis_id": analysis.id,
+                    "file_name": file.filename,
+                    "file_type": file_type,
+                    "transcript": transcript,
+                    "wpm_data": wpm_analysis,
+                    "filler_word_analysis": filler_analysis,
+                    "loudness_analysis": loudness_analysis,
+                    "clarity_analysis": (
+                        clarity_analysis["clarity_score"] if clarity_analysis else None
+                    ),
+                    "head_direction_analysis": head_direction_analysis,
+                    "facial_expression_analysis": facial_expression_analysis,
+                    "posture_analysis": posture_analysis,
+                    "gesture_analysis": gesture_analysis,
+                    "intonation_analysis": intonation_analysis,
+                    "topic_coverage": topic_coverage,
+                    "created_at": analysis.created_at.isoformat(),
+                }
+
+            # This is where we are invoking the gemini LLM judge to get the final feedback
+            service = GeminiFeedbackService(api_key=os.getenv("GEMINI_API_KEY"))
+            prepared_data = prepare_gemini_input(data)
+            final_feedback = service.generate_feedback(prepared_data)
+
+            data["llm_judge_feedback"] = final_feedback
+
             # Update analysis record with results
             analysis.file_type = file_type
             analysis.status = "completed"
@@ -407,25 +429,7 @@ class AnalysisController:
             db.refresh(analysis)
 
             return ResponseBuilder.success(
-                data={
-                    "analysis_id": analysis.id,
-                    "file_name": file.filename,
-                    "file_type": file_type,
-                    "transcript": transcript,
-                    "wpm_data": wpm_analysis,
-                    "filler_word_analysis": filler_analysis,
-                    "loudness_analysis": loudness_analysis,
-                    "clarity_analysis": (
-                        clarity_analysis["clarity_score"] if clarity_analysis else None
-                    ),
-                    "head_direction_analysis": head_direction_analysis,
-                    "facial_expression_analysis": facial_expression_analysis,
-                    "posture_analysis": posture_analysis,
-                    "gesture_analysis": gesture_analysis,
-                    "intonation_analysis": intonation_analysis,
-                    "topic_coverage": topic_coverage,
-                    "created_at": analysis.created_at.isoformat(),
-                },
+                data=data,
                 message="Analysis completed and saved successfully",
                 status_code=200,
             )
