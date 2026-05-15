@@ -26,40 +26,22 @@ from ..services.gemini_feedback import FinalFeedback
 from ..services.progress_service import ProgressService
 import functools
 
-# Global ProcessPoolExecutor for CPU-heavy tasks (Intonation, Video Analysis)
-# This allows bypassing the GIL for true parallel processing
-_cpu_executor = ProcessPoolExecutor(max_workers=min(os.cpu_count(), 4))
-
-
-def _prosody_worker(audio_path):
-    """Heavy feature extraction for intonation"""
-
-    return IntonationAnalyzer().get_prosody_only(audio_path)
-
-
-def _video_analysis_worker(video_path, audience_position="front"):
-
-    abs_path = os.path.abspath(video_path)
-    return VideoAnalyzer().analyze_video(abs_path, audience_position=audience_position)
-
-
-def _loudness_worker(audio_path):
-    return LoudnessAnalyzer().analyze_loudness(audio_path)
-
-
-def _gesture_worker(video_path):
-    return GestureAnalyzer().analyze_gestures(video_path)
-
+from ..services.analysis_orchestrator import AnalysisOrchestrator
+from ..models.analysis_context import AnalysisContext
+from ..utils.executors import get_cpu_executor
 
 class AnalysisController:
     """Controller for handling file analysis operations"""
 
     def __init__(self):
-        # Get AssemblyAI API key from environment
+        # Get API keys
         self.assemblyai_key = os.getenv("ASSEMBLYAI_API_KEY")
+        self.gemini_key = os.getenv("GEMINI_API_KEY")
+        
         if not self.assemblyai_key:
             raise ValueError("ASSEMBLYAI_API_KEY environment variable not set")
 
+        # Initialize Services
         self.file_service = FileProcessingService(self.assemblyai_key)
         self.filler_analyzer = FillerWordAnalyzer()
         self.loudness_analyzer = LoudnessAnalyzer()
@@ -70,7 +52,16 @@ class AnalysisController:
         self.topic_analyzer = TopicCoverageAnalyzer()
         self.conclusion_generator = ConclusionGenerator()
         self.clarity_analyzer = ClarityAnalyzer()
+        self.feedback_service = GeminiFeedbackService(api_key=self.gemini_key)
         self.progress_service = ProgressService()
+        
+        # Initialize Orchestrator
+        self.orchestrator = AnalysisOrchestrator(
+            self.file_service, self.filler_analyzer, self.loudness_analyzer,
+            self.wpm_analyzer, self.intonation_analyzer, self.video_analyzer,
+            self.gesture_analyzer, self.topic_analyzer, self.conclusion_generator,
+            self.clarity_analyzer, self.feedback_service
+        )
 
     async def create_analysis(
         self,
@@ -81,29 +72,14 @@ class AnalysisController:
         audience_position: str = "front",
         progress_id: str = None,
     ):
-        """
-        Process uploaded file and save analysis results in a highly parallel pipeline.
-        Maximizes concurrency by starting independent analyzers while waiting for transcription.
-        """
-        # Validate file
+        """Orchestrates the creation and processing of a new analysis"""
+        
+        # 1. Validation
         is_valid, message = self.file_service.validate_file(file)
         if not is_valid:
             return ResponseBuilder.error(message, 400)
 
-        audio_path = None
-        temp_dir = None
-        transcription_task = None
-        prosody_task = None
-        loudness_task = None
-        head_direction_task = None
-        facial_expression_task = None
-        wpm_task = None
-        filler_task = None
-        intonation_task = None
-        topic_task = None
-        gesture_task = None
-
-        # Create initial analysis record in database
+        # 2. Database Record Initialization
         analysis = Analysis(
             user_id=user.id,
             file_name=file.filename,
@@ -114,355 +90,67 @@ class AnalysisController:
         db.commit()
         db.refresh(analysis)
         
-        # Tracking ID for progress
         tracking_id = progress_id or str(analysis.id)
-        logging.info(f"Using tracking_id for progress: {tracking_id} (original progress_id: {progress_id}, analysis.id: {analysis.id})")
-        
-        # Start progress tracking
         self.progress_service.update_progress(tracking_id, 5, "uploading")
 
+        # 3. Pipeline Execution
+        temp_dir = None
         try:
-            start_total = time.perf_counter()
-            t1 = datetime.now().strftime("%H:%M:%S")
-            logging.info("--- Step 1: Extracting audio and transcribing (AssemblyAI) ---")
-
-            self.progress_service.update_progress(tracking_id, 10, "extracting-audio")
-            transcript, captions, file_type, audio_path = (
-                await self.file_service.process_file(file)
-            )
-            self.progress_service.update_progress(tracking_id, 30, "analyzing-speech")
-
-            t2 = datetime.now().strftime("%H:%M:%S")
-            d1 = time.perf_counter() - start_total
-            logging.info(f"--- Step 1 Finished in {d1:.2f}s: Transcription received ---")
-
-            # Get temp directory from audio path for cleanup
+            # Prepare file and local paths
+            _, _, file_type, audio_path = await self.file_service.process_file(file)
             temp_dir = os.path.dirname(audio_path)
-            # Reconstruct original input path (assuming process_file followed the input+ext convention)
             file_ext = os.path.splitext(file.filename)[1]
             input_path = os.path.join(temp_dir, f"input{file_ext}")
 
-            # Step 2: Run analyzers IN PARALLEL
-            t3 = datetime.now().strftime("%H:%M:%S")
-            step2_start = time.perf_counter()
-
-            loop = asyncio.get_running_loop()
-
-            async def measure_task(name, executor, func, *args):
-                start = time.perf_counter()
-                res = await loop.run_in_executor(executor, func, *args)
-                d = time.perf_counter() - start
-                logging.info(f"    -> {name} took {d:.2f}s")
-                return res
-
-            logging.info("--- Step 2: Starting parallel analyzers (WPM, Filler, Loudness, Intonation) ---")
-
-            # --- PHASE 2: CONCURRENT INDEPENDENT TASKS ---
-            # We start all tasks that don't need transcription here.
-            # This includes the "Prosody" part of intonation analysis.
-            logging.info("--- Phase 2: Starting simultaneous cloud & local tasks ---")
-            self.progress_service.update_progress(tracking_id, 40, "detecting-visuals")
-
-            # 1. Broadcaster to Cloud (AssemblyAI)
-            transcription_task = asyncio.create_task(
-                asyncio.to_thread(self.file_service.transcribe_audio, audio_path)
+            # Create context for the orchestrator
+            context = AnalysisContext(
+                tracking_id=tracking_id,
+                file_type=file_type,
+                audio_path=audio_path,
+                input_path=input_path,
+                temp_dir=temp_dir,
+                start_time=time.perf_counter()
             )
 
-            # 2. Local Prosody Extraction (HEAVY CPU, in separate process)
-            prosody_task = asyncio.create_task(
-                measure_task(
-                    "Prosody Extraction", _cpu_executor, _prosody_worker, audio_path
-                )
-            )
+            # Run the heavy lifting
+            await self.orchestrator.run_pipeline(context, topic, audience_position)
 
-            # 3. Local Loudness (Fast Thread)
-            loudness_task = asyncio.create_task(
-                measure_task(
-                    "Loudness",
-                    None,
-                    self.loudness_analyzer.analyze_loudness,
-                    audio_path,
-                )
-            )
-
-            # 4. Local Video Analysis (HEAVY CPU, combined in separate process)
-            video_task = None
-            if file_type == "video":
-                video_task = asyncio.create_task(
-                    measure_task(
-                        "Video Analysis",
-                        _cpu_executor,
-                        _video_analysis_worker,
-                        input_path,
-                        audience_position,
-                    )
-                )
-                gesture_task = asyncio.create_task(
-                    measure_task(
-                        "Gesture Analysis", _cpu_executor, _gesture_worker, input_path
-                    )
-                )
-
-            # --- PHASE 3: DEPENDENT TASKS (REQUIRES TRANSCRIPTION) ---
-            logging.info("--- Phase 3: Waiting for transcript & scoring results ---")
-            
-            # Wait for Phase 2 results that ARE needed for Step 3
-            transcript_obj = await transcription_task
-            self.progress_service.update_progress(tracking_id, 30, "analyzing-speech")
-            
-            t_transcript = datetime.now().strftime("%H:%M:%S")
-            logging.info("--- Phase 3: Transcript received from AssemblyAI ---")
-
-            if not transcript_obj:
-                raise HTTPException(status_code=500, detail="Transcription failed")
-
-            transcript = transcript_obj.text
-            captions = self.file_service.extract_captions(transcript_obj)
-
-            # Wait for prosody results if not ready
-            prosody_result = await prosody_task
-
-            # Start dependent tasks
-            wpm_task = asyncio.create_task(
-                measure_task("WPM", None, self.wpm_analyzer.calculate_wpm, captions, 2)
-            )
-            filler_task = asyncio.create_task(
-                measure_task(
-                    "Filler", None, self.filler_analyzer.identify_fillers, transcript
-                )
-            )
-
-            # Intonation scoring (now it's very fast because prosody_res is passed in)
-            intonation_task = asyncio.create_task(
-                measure_task(
-                    "Intonation Scoring",
-                    None,
-                    self.intonation_analyzer.analyze_intonation,
-                    audio_path,
-                    transcript,
-                    captions,
-                    0.5,
-                    0.5,
-                    prosody_result,
-                )
-            )
-
-            # Add clarity analysis task
-            clarity_task = asyncio.create_task(
-                measure_task(
-                    "Clarity Analysis",
-                    None,
-                    self.clarity_analyzer.analyze_clarity,
-                    audio_path,
-                )
-            )
-            
-            self.progress_service.update_progress(tracking_id, 35, "analyzing-speech")
-
-            topic_task = None
-            if topic:
-                topic_task = asyncio.create_task(
-                    measure_task(
-                        "Topic Coverage",
-                        None,
-                        self.topic_analyzer.compute_coverage,
-                        topic,
-                        transcript,
-                    )
-                )
-
-            # --- PHASE 4: INCREMENTAL PROGRESS TRACKING ---
-            all_remaining_tasks = {
-                loudness_task: "Loudness",
-                clarity_task: "Clarity Analysis",
-                wpm_task: "WPM",
-                filler_task: "Filler",
-                intonation_task: "Intonation",
-            }
-            if video_task:
-                all_remaining_tasks[video_task] = "Video Analysis"
-            if gesture_task:
-                all_remaining_tasks[gesture_task] = "Gesture Analysis"
-            if topic_task:
-                all_remaining_tasks[topic_task] = "Topic Coverage"
-
-            # Use as_completed to update progress bar incrementally
-            total_tasks = len(all_remaining_tasks)
-            finished_tasks = 0
-            
-            for future in asyncio.as_completed(all_remaining_tasks.keys()):
-                await future
-                finished_tasks += 1
-                
-                # Update progress: 35% -> 80% over these tasks
-                current_p = 35 + (45 * (finished_tasks / total_tasks))
-                
-                # Dynamically choose stage based on progress
-                current_stage = "analyzing-speech"
-                if current_p > 50: current_stage = "detecting-visuals"
-                if current_p > 70: current_stage = "assessing-engagement"
-                
-                self.progress_service.update_progress(tracking_id, current_p, current_stage)
-
-            # Now unpack results (they are already finished)
-            def check_res(t, name):
-                try:
-                    r = t.result()
-                    if isinstance(r, Exception):
-                        logging.info(f"!!! Task {name} failed: {r}")
-                        return None
-                    return r
-                except Exception as e:
-                    logging.info(f"!!! Task {name} raised error: {e}")
-                    return None
-
-            loudness_analysis = check_res(loudness_task, "Loudness")
-            video_analysis = check_res(video_task, "Video Analysis") if video_task else None
-            wpm_res = check_res(wpm_task, "WPM")
-            filler_analysis = check_res(filler_task, "Filler")
-            intonation_analysis = check_res(intonation_task, "Intonation")
-            clarity_analysis = check_res(clarity_task, "Clarity Analysis")
-            topic_coverage = check_res(topic_task, "Topic Coverage") if topic_task else None
-            gesture_analysis = check_res(gesture_task, "Gesture Analysis") if gesture_task else None
-
-            # --- PHASE 4: GENERATE CONCLUSIONS ---
-            self.progress_service.update_progress(tracking_id, 80, "calculating-scores")
-            # Summarize scores for humans
-            intonation_analysis["conclusion"] = (
-                self.conclusion_generator.get_intonation_conclusion(intonation_analysis)
-            )
-            wpm_analysis["conclusion"] = self.conclusion_generator.get_wpm_conclusion(
-                wpm_analysis["intervals"]
-            )
-            loudness_analysis["conclusion"] = (
-                self.conclusion_generator.get_loudness_conclusion(loudness_analysis)
-            )
-
-            if head_direction_analysis:
-                head_direction_analysis["conclusion"] = (
-                    self.conclusion_generator.get_eye_contact_conclusion(
-                        head_direction_analysis, audience_position
-                    )
-                )
-
-            if facial_expression_analysis:
-                facial_expression_analysis["conclusion"] = (
-                    self.conclusion_generator.get_expression_conclusion(
-                        facial_expression_analysis
-                    )
-                )
-
-            if topic_coverage:
-                topic_coverage["conclusion"] = (
-                    self.conclusion_generator.get_relevance_conclusion(topic_coverage)
-                )
-
-            if posture_analysis:
-                posture_analysis["conclusion"] = (
-                    self.conclusion_generator.get_posture_conclusion(posture_analysis)
-                )
-
-            t4 = datetime.now().strftime("%H:%M:%S")
-            d2 = time.perf_counter() - step2_start
-            logging.info(f"--- Step 2 Finished in {d2:.2f}s: All analyses complete ---")
-            total_time = time.perf_counter() - start_total
-            logging.info(f"!!! Total Processing Time: {total_time:.2f}s !!!")
-
-            data = {
-                "analysis_id": analysis.id,
-                "file_name": file.filename,
-                "file_type": file_type,
-                "transcript": transcript,
-                "wpm_data": wpm_analysis,
-                "filler_word_analysis": filler_analysis,
-                "loudness_analysis": loudness_analysis,
-                "clarity_analysis": (
-                    clarity_analysis["clarity_score"] if clarity_analysis else None
-                ),
-                "head_direction_analysis": head_direction_analysis,
-                "facial_expression_analysis": facial_expression_analysis,
-                "posture_analysis": posture_analysis,
-                "gesture_analysis": gesture_analysis,
-                "intonation_analysis": intonation_analysis,
-                "topic_coverage": topic_coverage,
-                "created_at": analysis.created_at.isoformat(),
-            }
-
-            # This is where we are invoking the gemini LLM judge to get the final feedback
-            self.progress_service.update_progress(tracking_id, 90, "generating-insights")
-            service = GeminiFeedbackService(api_key=os.getenv("GEMINI_API_KEY"))
-            prepared_data = prepare_gemini_input(data)
-            final_feedback = service.generate_feedback(prepared_data)
-
-            data["llm_judge_feedback"] = final_feedback
-
-            # Update analysis record with results
-            analysis.file_type = file_type
+            # 4. Finalize Results
             analysis.status = "completed"
-            analysis.transcript = transcript
-            analysis.captions = captions
-            analysis.wpm_data = wpm_analysis
-            analysis.filler_word_analysis = filler_analysis
-            analysis.loudness_analysis = loudness_analysis
-            analysis.head_direction_analysis = head_direction_analysis
-            analysis.facial_expression_analysis = facial_expression_analysis
-            analysis.posture_analysis = posture_analysis
-            analysis.gesture_analysis = gesture_analysis
-            analysis.intonation_analysis = intonation_analysis
-            analysis.topic_coverage = topic_coverage
-            analysis.clarity_analysis = clarity_analysis
-            analysis.llm_judge_feedback = final_feedback.model_dump_json()
-            db.commit()
-            db.refresh(analysis)
+            analysis.file_type = file_type
+            analysis.transcript = context.transcript
+            analysis.captions = context.captions
+            analysis.llm_judge_feedback = context.final_data["llm_judge_feedback"].model_dump_json()
             
+            # Map module results back to entity
+            res = context.results
+            analysis.wpm_data = context.final_data["wpm_data"]
+            analysis.filler_word_analysis = res["filler"]
+            analysis.loudness_analysis = res["loudness"]
+            analysis.head_direction_analysis = context.final_data["head_direction_analysis"]
+            analysis.facial_expression_analysis = context.final_data["facial_expression_analysis"]
+            analysis.posture_analysis = context.final_data["posture_analysis"]
+            analysis.gesture_analysis = res["gesture"]
+            analysis.intonation_analysis = res["intonation"]
+            analysis.topic_coverage = res["topic"]
+            analysis.clarity_analysis = res["clarity"]
+            
+            db.commit()
             self.progress_service.update_progress(tracking_id, 100, "complete")
-            # Cleanup progress data after some time or immediately
             self.progress_service.remove_progress(tracking_id)
 
-            return ResponseBuilder.success(
-                data=data,
-                message="Analysis completed and saved successfully",
-                status_code=200,
-            )
+            # Prepare return data
+            return_data = {**context.final_data, "analysis_id": analysis.id, "created_at": analysis.created_at.isoformat()}
+            return ResponseBuilder.success(data=return_data, message="Analysis completed successfully")
+
         except Exception as e:
-            # Update analysis status to failed and ensure it's saved
-            try:
-                analysis.status = "failed"
-                analysis.error_message = str(e)
-                db.commit()
-            except Exception as commit_error:
-                print(f"Failed to save error status: {commit_error}")
-                db.rollback()
-
+            logging.exception(f"Critical failure in analysis pipeline for {tracking_id}")
+            analysis.status = "failed"
+            analysis.error_message = str(e)
+            db.commit()
             return ResponseBuilder.error(f"Analysis failed: {str(e)}", 500)
+            
         finally:
-            # Important: We must ensure all background tasks are handled
-            # before we delete the temp directory, otherwise workers might crash
-            # trying to read from a deleted location.
-            all_tasks = [
-                transcription_task,
-                prosody_task,
-                loudness_task,
-                head_direction_task,
-                facial_expression_task,
-                wpm_task,
-                filler_task,
-                intonation_task,
-                topic_task,
-                gesture_task,
-            ]
-            running_tasks = [t for t in all_tasks if t and not t.done()]
-
-            if running_tasks:
-                logging.info(
-                    f"Cleaning up {len(running_tasks)} pending tasks before folder deletion..."
-                )
-                for t in running_tasks:
-                    t.cancel()
-                # Await cancellation completions (with return_exceptions=True to avoid raising CancelledError here)
-                await asyncio.gather(*running_tasks, return_exceptions=True)
-
-            # Clean up temporary files
             if temp_dir and os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir, ignore_errors=True)
 

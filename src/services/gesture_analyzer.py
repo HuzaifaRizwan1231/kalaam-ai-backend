@@ -19,9 +19,7 @@ class GestureAnalyzer:
     """
 
     def __init__(self):
-        self.mp_pose = mp.solutions.pose
-        self.mp_hands = mp.solutions.hands
-        self.mp_drawing = mp.solutions.drawing_utils
+        pass
 
     def calculate_distance(self, p1, p2):
         return math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2)
@@ -32,13 +30,13 @@ class GestureAnalyzer:
         """
 
         tips = [
-            self.mp_hands.HandLandmark.INDEX_FINGER_TIP,
-            self.mp_hands.HandLandmark.MIDDLE_FINGER_TIP,
-            self.mp_hands.HandLandmark.RING_FINGER_TIP,
-            self.mp_hands.HandLandmark.PINKY_TIP,
+            mp.solutions.hands.HandLandmark.INDEX_FINGER_TIP,
+            mp.solutions.hands.HandLandmark.MIDDLE_FINGER_TIP,
+            mp.solutions.hands.HandLandmark.RING_FINGER_TIP,
+            mp.solutions.hands.HandLandmark.PINKY_TIP,
         ]
 
-        palm = hand_landmarks.landmark[self.mp_hands.HandLandmark.WRIST]
+        palm = hand_landmarks.landmark[mp.solutions.hands.HandLandmark.WRIST]
 
         extended = 0
 
@@ -58,17 +56,17 @@ class GestureAnalyzer:
         Index finger extended while others folded.
         """
 
-        index_tip = hand_landmarks.landmark[self.mp_hands.HandLandmark.INDEX_FINGER_TIP]
+        index_tip = hand_landmarks.landmark[mp.solutions.hands.HandLandmark.INDEX_FINGER_TIP]
 
         middle_tip = hand_landmarks.landmark[
-            self.mp_hands.HandLandmark.MIDDLE_FINGER_TIP
+            mp.solutions.hands.HandLandmark.MIDDLE_FINGER_TIP
         ]
 
-        ring_tip = hand_landmarks.landmark[self.mp_hands.HandLandmark.RING_FINGER_TIP]
+        ring_tip = hand_landmarks.landmark[mp.solutions.hands.HandLandmark.RING_FINGER_TIP]
 
-        pinky_tip = hand_landmarks.landmark[self.mp_hands.HandLandmark.PINKY_TIP]
+        pinky_tip = hand_landmarks.landmark[mp.solutions.hands.HandLandmark.PINKY_TIP]
 
-        wrist = hand_landmarks.landmark[self.mp_hands.HandLandmark.WRIST]
+        wrist = hand_landmarks.landmark[mp.solutions.hands.HandLandmark.WRIST]
 
         index_dist = self.calculate_distance(index_tip, wrist)
         middle_dist = self.calculate_distance(middle_tip, wrist)
@@ -87,13 +85,13 @@ class GestureAnalyzer:
         Detect crossed arms using wrist/elbow positions.
         """
 
-        left_wrist = pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_WRIST]
+        left_wrist = pose_landmarks.landmark[mp.solutions.pose.PoseLandmark.LEFT_WRIST]
 
-        right_wrist = pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_WRIST]
+        right_wrist = pose_landmarks.landmark[mp.solutions.pose.PoseLandmark.RIGHT_WRIST]
 
-        left_elbow = pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_ELBOW]
+        left_elbow = pose_landmarks.landmark[mp.solutions.pose.PoseLandmark.LEFT_ELBOW]
 
-        right_elbow = pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_ELBOW]
+        right_elbow = pose_landmarks.landmark[mp.solutions.pose.PoseLandmark.RIGHT_ELBOW]
 
         left_cross = self.calculate_distance(left_wrist, right_elbow)
         right_cross = self.calculate_distance(right_wrist, left_elbow)
@@ -120,9 +118,9 @@ class GestureAnalyzer:
 
         print(f"[{datetime.now().strftime('%H:%M:%S')}] [Gestures] Starting analysis of {total_frames} frames (every {sample_every_n_frames})")
 
-        with self.mp_pose.Pose(
+        with mp.solutions.pose.Pose(
             min_detection_confidence=0.5, min_tracking_confidence=0.5
-        ) as pose, self.mp_hands.Hands(
+        ) as pose, mp.solutions.hands.Hands(
             min_detection_confidence=0.5, min_tracking_confidence=0.5, max_num_hands=2
         ) as hands:
 
@@ -168,11 +166,11 @@ class GestureAnalyzer:
                         gesture_counts["arms_crossed"] += 1
 
                     left_wrist = pose_landmarks.landmark[
-                        self.mp_pose.PoseLandmark.LEFT_WRIST
+                        mp.solutions.pose.PoseLandmark.LEFT_WRIST
                     ]
 
                     right_wrist = pose_landmarks.landmark[
-                        self.mp_pose.PoseLandmark.RIGHT_WRIST
+                        mp.solutions.pose.PoseLandmark.RIGHT_WRIST
                     ]
 
                     if previous_left_wrist and previous_right_wrist:

@@ -13,12 +13,7 @@ class ClarityAnalyzer:
         :param audio_path: Path to the audio file
         :return: Dictionary containing clarity metrics
         """
-        # Example logic for clarity analysis
-        clarity_score = self.compute_clarity(audio_path)
-        return {
-            "clarity_score": clarity_score,
-            "description": "Higher score indicates better clarity",
-        }
+        return self.compute_clarity(audio_path)
 
     def estimate_snr(self, y):
         """

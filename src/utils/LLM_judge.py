@@ -103,6 +103,8 @@ def prepare_gemini_input(data: dict) -> dict:
     loudness_conclusion = loudness_analysis.get("conclusion", "")
     
     clarity = data.get("clarity_analysis") or {}
+    clarity_score = clarity.get("clarity_score", 0) if isinstance(clarity, dict) else (clarity or 0)
+    
     head = data.get("head_direction_analysis") or {}
     posture = data.get("posture_analysis") or {}
     gesture = data.get("gesture_analysis") or {}
@@ -146,6 +148,8 @@ def prepare_gemini_input(data: dict) -> dict:
         return "Good"
 
     def eye_contact_label(pct):
+        if pct is None:
+            return "N/A"
         if pct < 10:
             return "Very poor"
         elif pct < 40:
@@ -155,6 +159,8 @@ def prepare_gemini_input(data: dict) -> dict:
         return "Excellent"
 
     def posture_label(breakdown):
+        if not breakdown:
+            return "N/A"
         confident = breakdown.get("Confident", 0)
         closed = breakdown.get("Closed", 0)
         slouching = breakdown.get("Slouching", 0)
@@ -165,6 +171,8 @@ def prepare_gemini_input(data: dict) -> dict:
         return "Mixed"
 
     def gesture_label(score):
+        if score is None:
+            return "N/A"
         if score >= 80:
             return "Active"
         elif score >= 60:
@@ -172,6 +180,8 @@ def prepare_gemini_input(data: dict) -> dict:
         return "Very limited"
 
     def intonation_label(label_str):
+        if not label_str:
+            return "Moderate"
         mapping = {
             "monotone": "Flat",
             "moderate": "Expressive but slightly overdone",
@@ -196,20 +206,20 @@ def prepare_gemini_input(data: dict) -> dict:
         strengths.append("Confident posture")
 
     eye_pct = head.get("percentage_looking", 0)
-    if eye_pct < 20:
+    if eye_pct is not None and eye_pct < 20 and data.get("file_type") == "video":
         weaknesses.append("Very poor eye contact")
     if "inconsistent" in loudness_conclusion.lower():
         weaknesses.append("Inconsistent volume")
     if posture.get("posture_breakdown", {}).get("Closed", 0) > 40:
         weaknesses.append("Closed body posture")
-    if clarity.get("clarity_score", 100) < 40:
+    if clarity_score < 40:
         weaknesses.append("Low audio clarity")
-    if gesture.get("gesture_usage_ratio", 1) == 0:
+    if gesture.get("gesture_usage_ratio", 1) == 0 and data.get("file_type") == "video":
         weaknesses.append("Very little hand gesture usage")
 
     # --- Transcript excerpt ---
     transcript = data.get("transcript", "")
-    excerpt = transcript[:50] + "..." if len(transcript) > 50 else transcript
+    excerpt = (transcript[:50] + "...") if transcript and len(transcript) > 50 else (transcript or "")
 
     # --- Duration ---
     duration = round(loudness_analysis.get("statistics", {}).get("total_duration", 0))
@@ -222,8 +232,8 @@ def prepare_gemini_input(data: dict) -> dict:
         "metrics": {
             "wpm": avg_wpm,
             "filler_percentage": round(filler_pct, 2),
-            "eye_contact": round(eye_pct, 2),
-            "clarity_score": round(clarity.get("clarity_score", 0), 2),
+            "eye_contact": round(eye_pct or 0, 2),
+            "clarity_score": round(clarity_score, 2),
             "intonation_score": round(intonation.get("average_prosody_score", 0), 2),
             "gesture_score": gesture.get("presentation_gesture_score", 0),
         },

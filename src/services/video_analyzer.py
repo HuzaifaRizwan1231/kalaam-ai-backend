@@ -50,8 +50,6 @@ class VideoAnalyzer:
     """
 
     def __init__(self):
-        self.mp_face_mesh = mp.solutions.face_mesh
-        self.mp_pose = mp.solutions.pose
         self.movement_history_window = 30
 
     def _dist(self, a, b):
@@ -159,14 +157,14 @@ class VideoAnalyzer:
         
         frame_index = 0
 
-        with self.mp_face_mesh.FaceMesh(
+        with mp.solutions.face_mesh.FaceMesh(
             static_image_mode=False,
             max_num_faces=1,
             refine_landmarks=True,
             min_detection_confidence=0.5
         ) as face_mesh:
 
-            with self.mp_pose.Pose(
+            with mp.solutions.pose.Pose(
                 static_image_mode=False,
                 model_complexity=0,
                 smooth_landmarks=True,
