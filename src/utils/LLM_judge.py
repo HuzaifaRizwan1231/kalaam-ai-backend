@@ -56,12 +56,24 @@ Return ONLY valid JSON in this exact structure:
   "key_issues": [
     "Most critical problems explained clearly and specifically"
   ],
-  "detailed_feedback": {{
-    "delivery": "Feedback on pace ({metrics["wpm"]} WPM), clarity score ({metrics["clarity_score"]}), volume ({analysis["volume"]}), and filler usage ({metrics["filler_percentage"]}%)",
-    "body_language": "Feedback on eye contact ({metrics["eye_contact"]}%), posture ({analysis["posture"]}), and gestures ({analysis["gestures"]})",
-    "engagement": "Feedback on audience connection, intonation ({analysis["intonation"]}), and expressiveness",
-    "content": "Feedback on topic relevance ({presentation["topic"]}) and overall structure"
-  }},
+  "detailed_feedback": [
+    {{
+      "category": "Delivery",
+      "feedback_text": "Feedback on pace ({metrics["wpm"]} WPM), clarity score ({metrics["clarity_score"]}), volume ({analysis["volume"]}), and filler usage ({metrics["filler_percentage"]}%)"
+    }},
+    {{
+      "category": "Body Language",
+      "feedback_text": "Feedback on eye contact ({metrics["eye_contact"]}%), posture ({analysis["posture"]}), and gestures ({analysis["gestures"]})"
+    }},
+    {{
+      "category": "Engagement",
+      "feedback_text": "Feedback on audience connection, intonation ({analysis["intonation"]}), and expressiveness"
+    }},
+    {{
+      "category": "Content",
+      "feedback_text": "Feedback on topic relevance ({presentation["topic"]}) and overall structure"
+    }}
+  ],
   "actionable_improvements": [
     "Specific, concrete action the user can take to improve"
   ]
@@ -81,18 +93,26 @@ Prioritize issues in this order: eye contact → clarity → posture → gesture
 """
 
 def prepare_gemini_input(data: dict) -> dict:
-    wpm_conclusion = data.get("wpm_data", {}).get("conclusion", "")
-    filler_pct = data.get("filler_word_analysis", {}).get("filler_percentage", 0)
-    loudness_conclusion = data.get("loudness_analysis", {}).get("conclusion", "")
-    clarity = data.get("clarity_analysis", {})
-    head = data.get("head_direction_analysis", {})
-    posture = data.get("posture_analysis", {})
-    gesture = data.get("gesture_analysis", {})
-    intonation = data.get("intonation_analysis", {})
-    topic_coverage = data.get("topic_coverage", {})
+    wpm_data = data.get("wpm_data") or {}
+    wpm_conclusion = wpm_data.get("conclusion", "")
+    
+    filler_word_analysis = data.get("filler_word_analysis") or {}
+    filler_pct = filler_word_analysis.get("filler_percentage", 0)
+    
+    loudness_analysis = data.get("loudness_analysis") or {}
+    loudness_conclusion = loudness_analysis.get("conclusion", "")
+    
+    clarity = data.get("clarity_analysis") or {}
+    head = data.get("head_direction_analysis") or {}
+    posture = data.get("posture_analysis") or {}
+    gesture = data.get("gesture_analysis") or {}
+    intonation = data.get("intonation_analysis") or {}
+    topic_coverage = data.get("topic_coverage") or {}
 
     # --- Derived labels ---
     def pace_label(conclusion):
+        if not conclusion:
+            return "Moderate"
         c = conclusion.lower()
         if "perfect" in c or "ideal" in c:
             return "Ideal"
@@ -103,6 +123,8 @@ def prepare_gemini_input(data: dict) -> dict:
         return "Moderate"
 
     def filler_label(pct):
+        if pct is None:
+            return "Moderate"
         if pct == 0:
             return "None"
         elif pct < 2:
@@ -112,6 +134,8 @@ def prepare_gemini_input(data: dict) -> dict:
         return "High"
 
     def volume_label(conclusion):
+        if not conclusion:
+            return "Good"
         c = conclusion.lower()
         if "inconsistent" in c or "fluctuat" in c:
             return "Inconsistent"
@@ -159,8 +183,8 @@ def prepare_gemini_input(data: dict) -> dict:
     strengths = []
     weaknesses = []
 
-    wpm = data.get("wpm_data", {}).get("intervals", [])
-    avg_wpm = round(sum(i["wpm"] for i in wpm) / len(wpm)) if wpm else 0
+    wpm_intervals = wpm_data.get("intervals", [])
+    avg_wpm = round(sum(i["wpm"] for i in wpm_intervals) / len(wpm_intervals)) if wpm_intervals else 0
 
     if "perfect" in wpm_conclusion.lower() or "ideal" in wpm_conclusion.lower():
         strengths.append("Excellent speaking pace")
@@ -188,7 +212,7 @@ def prepare_gemini_input(data: dict) -> dict:
     excerpt = transcript[:50] + "..." if len(transcript) > 50 else transcript
 
     # --- Duration ---
-    duration = round(data.get("loudness_analysis", {}).get("statistics", {}).get("total_duration", 0))
+    duration = round(loudness_analysis.get("statistics", {}).get("total_duration", 0))
 
     return {
         "presentation_summary": {

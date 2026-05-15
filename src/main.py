@@ -8,6 +8,9 @@ from .rate_limiter import limiter
 from .utils.exception_handler import register_exception_handlers
 
 configure_logging(LogLevels.info)
+import logging
+logging.info("Backend application starting up...")
+
 
 app = FastAPI()
 

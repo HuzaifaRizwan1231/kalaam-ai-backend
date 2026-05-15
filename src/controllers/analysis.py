@@ -1,4 +1,4 @@
-import os, json
+import os, json, logging
 import asyncio
 import tempfile
 import shutil
@@ -23,6 +23,7 @@ from concurrent.futures import ProcessPoolExecutor
 from ..utils.LLM_judge import prepare_gemini_input
 from ..services.gemini_feedback import GeminiFeedbackService
 from ..services.gemini_feedback import FinalFeedback
+from ..services.progress_service import ProgressService
 import functools
 
 # Global ProcessPoolExecutor for CPU-heavy tasks (Intonation, Video Analysis)
@@ -69,6 +70,7 @@ class AnalysisController:
         self.topic_analyzer = TopicCoverageAnalyzer()
         self.conclusion_generator = ConclusionGenerator()
         self.clarity_analyzer = ClarityAnalyzer()
+        self.progress_service = ProgressService()
 
     async def create_analysis(
         self,
@@ -77,6 +79,7 @@ class AnalysisController:
         db: Session,
         topic: str = None,
         audience_position: str = "front",
+        progress_id: str = None,
     ):
         """
         Process uploaded file and save analysis results in a highly parallel pipeline.
@@ -110,23 +113,28 @@ class AnalysisController:
         db.add(analysis)
         db.commit()
         db.refresh(analysis)
+        
+        # Tracking ID for progress
+        tracking_id = progress_id or str(analysis.id)
+        logging.info(f"Using tracking_id for progress: {tracking_id} (original progress_id: {progress_id}, analysis.id: {analysis.id})")
+        
+        # Start progress tracking
+        self.progress_service.update_progress(tracking_id, 5, "uploading")
 
         try:
             start_total = time.perf_counter()
             t1 = datetime.now().strftime("%H:%M:%S")
-            print(
-                f"[{t1}] --- Step 1: Extracting audio and transcribing (AssemblyAI) ---"
-            )
+            logging.info("--- Step 1: Extracting audio and transcribing (AssemblyAI) ---")
 
+            self.progress_service.update_progress(tracking_id, 10, "extracting-audio")
             transcript, captions, file_type, audio_path = (
                 await self.file_service.process_file(file)
             )
+            self.progress_service.update_progress(tracking_id, 30, "analyzing-speech")
 
             t2 = datetime.now().strftime("%H:%M:%S")
             d1 = time.perf_counter() - start_total
-            print(
-                f"[{t2}] --- Step 1 Finished in {d1:.2f}s: Transcription received ---"
-            )
+            logging.info(f"--- Step 1 Finished in {d1:.2f}s: Transcription received ---")
 
             # Get temp directory from audio path for cleanup
             temp_dir = os.path.dirname(audio_path)
@@ -144,21 +152,16 @@ class AnalysisController:
                 start = time.perf_counter()
                 res = await loop.run_in_executor(executor, func, *args)
                 d = time.perf_counter() - start
-                print(
-                    f"[{datetime.now().strftime('%H:%M:%S')}]     -> {name} took {d:.2f}s"
-                )
+                logging.info(f"    -> {name} took {d:.2f}s")
                 return res
 
-            print(
-                f"[{t3}] --- Step 2: Starting parallel analyzers (WPM, Filler, Loudness, Intonation) ---"
-            )
+            logging.info("--- Step 2: Starting parallel analyzers (WPM, Filler, Loudness, Intonation) ---")
 
             # --- PHASE 2: CONCURRENT INDEPENDENT TASKS ---
             # We start all tasks that don't need transcription here.
             # This includes the "Prosody" part of intonation analysis.
-            print(
-                f"[{datetime.now().strftime('%H:%M:%S')}] --- Phase 2: Starting simultaneous cloud & local tasks ---"
-            )
+            logging.info("--- Phase 2: Starting simultaneous cloud & local tasks ---")
+            self.progress_service.update_progress(tracking_id, 40, "detecting-visuals")
 
             # 1. Broadcaster to Cloud (AssemblyAI)
             transcription_task = asyncio.create_task(
@@ -201,16 +204,14 @@ class AnalysisController:
                 )
 
             # --- PHASE 3: DEPENDENT TASKS (REQUIRES TRANSCRIPTION) ---
-            print(
-                f"[{datetime.now().strftime('%H:%M:%S')}] --- Phase 3: Waiting for transcript & scoring results ---"
-            )
-
+            logging.info("--- Phase 3: Waiting for transcript & scoring results ---")
+            
             # Wait for Phase 2 results that ARE needed for Step 3
             transcript_obj = await transcription_task
+            self.progress_service.update_progress(tracking_id, 30, "analyzing-speech")
+            
             t_transcript = datetime.now().strftime("%H:%M:%S")
-            print(
-                f"[{t_transcript}] --- Phase 3: Transcript received from AssemblyAI ---"
-            )
+            logging.info("--- Phase 3: Transcript received from AssemblyAI ---")
 
             if not transcript_obj:
                 raise HTTPException(status_code=500, detail="Transcription failed")
@@ -255,6 +256,8 @@ class AnalysisController:
                     audio_path,
                 )
             )
+            
+            self.progress_service.update_progress(tracking_id, 35, "analyzing-speech")
 
             topic_task = None
             if topic:
@@ -268,81 +271,62 @@ class AnalysisController:
                     )
                 )
 
-            # Wait for all remaining tasks
-            dependent_tasks = [wpm_task, filler_task, intonation_task]
-            if topic_task:
-                dependent_tasks.append(topic_task)
-            if gesture_task:
-                dependent_tasks.append(gesture_task)
-
-            # Re-gather everything with return_exceptions=True to avoid cascading file failures
-            results = await asyncio.gather(
-                loudness_task,
-                video_task or asyncio.sleep(0),
-                *dependent_tasks,
-                clarity_task,
-                return_exceptions=True,
-            )
-
-            # Unpack and handle exceptions
-            def check_res(r, name):
-                if isinstance(r, Exception):
-                    print(
-                        f"[{datetime.now().strftime('%H:%M:%S')}] !!! Task {name} failed: {r}"
-                    )
-                    return None
-                return r
-
-            loudness_analysis = check_res(results[0], "Loudness")
-            video_analysis = check_res(results[1], "Video Analysis")
-
-            head_direction_analysis = video_analysis["head"] if video_analysis else None
-            facial_expression_analysis = (
-                video_analysis["expression"] if video_analysis else None
-            )
-            posture_analysis = video_analysis["posture"] if video_analysis else None
-
-            wpm_res = check_res(results[2], "WPM")
-            wpm_analysis = {
-                "intervals": wpm_res or [],
-                "conclusion": "No pacing data" if not wpm_res else None,
+            # --- PHASE 4: INCREMENTAL PROGRESS TRACKING ---
+            all_remaining_tasks = {
+                loudness_task: "Loudness",
+                clarity_task: "Clarity Analysis",
+                wpm_task: "WPM",
+                filler_task: "Filler",
+                intonation_task: "Intonation",
             }
-
-            filler_analysis = check_res(results[3], "Filler")
-            if not filler_analysis:
-                filler_analysis = {
-                    "fillers": [],
-                    "filler_counts": {},
-                    "total_words": 0,
-                    "filler_percentage": 0,
-                }
-
-            intonation_analysis = check_res(results[4], "Intonation")
-            if not intonation_analysis:
-                intonation_analysis = {
-                    "emphasized_words": [],
-                    "total_words": 0,
-                    "total_content_words": 0,
-                    "total_emphasized": 0,
-                    "emphasis_percentage": 0,
-                    "average_prosody_score": 0,
-                    "word_scores": [],
-                    "conclusion": "Scoring failed",
-                }
-
-            clarity_analysis = check_res(results[-1], "Clarity Analysis")
-
-            topic_coverage = None
-            if topic_task:
-                topic_coverage = check_res(results[5], "Topic Coverage")
-
-            gesture_analysis = None
+            if video_task:
+                all_remaining_tasks[video_task] = "Video Analysis"
             if gesture_task:
-                gesture_analysis = check_res(
-                    results[6] if topic_task else results[5], "Gesture Analysis"
-                )
+                all_remaining_tasks[gesture_task] = "Gesture Analysis"
+            if topic_task:
+                all_remaining_tasks[topic_task] = "Topic Coverage"
+
+            # Use as_completed to update progress bar incrementally
+            total_tasks = len(all_remaining_tasks)
+            finished_tasks = 0
+            
+            for future in asyncio.as_completed(all_remaining_tasks.keys()):
+                await future
+                finished_tasks += 1
+                
+                # Update progress: 35% -> 80% over these tasks
+                current_p = 35 + (45 * (finished_tasks / total_tasks))
+                
+                # Dynamically choose stage based on progress
+                current_stage = "analyzing-speech"
+                if current_p > 50: current_stage = "detecting-visuals"
+                if current_p > 70: current_stage = "assessing-engagement"
+                
+                self.progress_service.update_progress(tracking_id, current_p, current_stage)
+
+            # Now unpack results (they are already finished)
+            def check_res(t, name):
+                try:
+                    r = t.result()
+                    if isinstance(r, Exception):
+                        logging.info(f"!!! Task {name} failed: {r}")
+                        return None
+                    return r
+                except Exception as e:
+                    logging.info(f"!!! Task {name} raised error: {e}")
+                    return None
+
+            loudness_analysis = check_res(loudness_task, "Loudness")
+            video_analysis = check_res(video_task, "Video Analysis") if video_task else None
+            wpm_res = check_res(wpm_task, "WPM")
+            filler_analysis = check_res(filler_task, "Filler")
+            intonation_analysis = check_res(intonation_task, "Intonation")
+            clarity_analysis = check_res(clarity_task, "Clarity Analysis")
+            topic_coverage = check_res(topic_task, "Topic Coverage") if topic_task else None
+            gesture_analysis = check_res(gesture_task, "Gesture Analysis") if gesture_task else None
 
             # --- PHASE 4: GENERATE CONCLUSIONS ---
+            self.progress_service.update_progress(tracking_id, 80, "calculating-scores")
             # Summarize scores for humans
             intonation_analysis["conclusion"] = (
                 self.conclusion_generator.get_intonation_conclusion(intonation_analysis)
@@ -380,9 +364,9 @@ class AnalysisController:
 
             t4 = datetime.now().strftime("%H:%M:%S")
             d2 = time.perf_counter() - step2_start
-            print(f"[{t4}] --- Step 2 Finished in {d2:.2f}s: All analyses complete ---")
+            logging.info(f"--- Step 2 Finished in {d2:.2f}s: All analyses complete ---")
             total_time = time.perf_counter() - start_total
-            print(f"[{t4}] !!! Total Processing Time: {total_time:.2f}s !!!")
+            logging.info(f"!!! Total Processing Time: {total_time:.2f}s !!!")
 
             data = {
                 "analysis_id": analysis.id,
@@ -405,6 +389,7 @@ class AnalysisController:
             }
 
             # This is where we are invoking the gemini LLM judge to get the final feedback
+            self.progress_service.update_progress(tracking_id, 90, "generating-insights")
             service = GeminiFeedbackService(api_key=os.getenv("GEMINI_API_KEY"))
             prepared_data = prepare_gemini_input(data)
             final_feedback = service.generate_feedback(prepared_data)
@@ -429,6 +414,10 @@ class AnalysisController:
             analysis.llm_judge_feedback = final_feedback.model_dump_json()
             db.commit()
             db.refresh(analysis)
+            
+            self.progress_service.update_progress(tracking_id, 100, "complete")
+            # Cleanup progress data after some time or immediately
+            self.progress_service.remove_progress(tracking_id)
 
             return ResponseBuilder.success(
                 data=data,
@@ -436,10 +425,14 @@ class AnalysisController:
                 status_code=200,
             )
         except Exception as e:
-            # Update analysis status to failed
-            analysis.status = "failed"
-            analysis.error_message = str(e)
-            db.rollback()
+            # Update analysis status to failed and ensure it's saved
+            try:
+                analysis.status = "failed"
+                analysis.error_message = str(e)
+                db.commit()
+            except Exception as commit_error:
+                print(f"Failed to save error status: {commit_error}")
+                db.rollback()
 
             return ResponseBuilder.error(f"Analysis failed: {str(e)}", 500)
         finally:
@@ -461,8 +454,8 @@ class AnalysisController:
             running_tasks = [t for t in all_tasks if t and not t.done()]
 
             if running_tasks:
-                print(
-                    f"[{datetime.now().strftime('%H:%M:%S')}] Cleaning up {len(running_tasks)} pending tasks before folder deletion..."
+                logging.info(
+                    f"Cleaning up {len(running_tasks)} pending tasks before folder deletion..."
                 )
                 for t in running_tasks:
                     t.cancel()
